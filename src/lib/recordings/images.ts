@@ -457,3 +457,94 @@ export async function getUserImageBytes(
     const parsed = Number(row?.total ?? 0);
     return Number.isFinite(parsed) ? parsed : 0;
 }
+
+/** Query for all of a user's ready photos on live recordings, grouped by recording in display order. */
+export function readyImagesByUserQuery(exec: Executor, userId: string) {
+    return exec
+        .select({
+            recordingId: recordingImages.recordingId,
+            plaudImageId: recordingImages.plaudImageId,
+            storagePath: recordingImages.storagePath,
+            mimeType: recordingImages.mimeType,
+            capturedAt: recordingImages.capturedAt,
+            offsetMs: recordingImages.offsetMs,
+        })
+        .from(recordingImages)
+        .innerJoin(recordings, eq(recordings.id, recordingImages.recordingId))
+        .where(
+            and(
+                eq(recordingImages.userId, userId),
+                eq(recordingImages.status, "ready"),
+                eq(recordings.userId, userId),
+                isNull(recordings.deletedAt),
+            ),
+        )
+        .orderBy(
+            asc(recordingImages.recordingId),
+            sql`${recordingImages.offsetMs} asc nulls last`,
+            asc(recordingImages.plaudImageId),
+        );
+}
+
+/** A user's ready photos keyed by recording id, each list in display order. */
+export async function listReadyImagesByRecording(
+    userId: string,
+    exec: Executor = db,
+): Promise<Map<string, Awaited<ReturnType<typeof readyImagesByUserQuery>>>> {
+    const rows = await readyImagesByUserQuery(exec, userId);
+    const byRecording = new Map<string, typeof rows>();
+    for (const row of rows) {
+        const list = byRecording.get(row.recordingId) ?? [];
+        list.push(row);
+        byRecording.set(row.recordingId, list);
+    }
+    return byRecording;
+}
+
+/** Extension of a stored photo path, if it is one of IMAGE_EXTENSIONS. */
+export function imageExtensionOf(
+    storagePath: string | null,
+): ImageExtension | null {
+    const ext = storagePath?.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
+    return ext && (IMAGE_EXTENSIONS as readonly string[]).includes(ext)
+        ? (ext as ImageExtension)
+        : null;
+}
+
+/** One ready photo of a live recording owned by the user, or null. */
+export async function getReadyImage(
+    userId: string,
+    recordingId: string,
+    imageId: string,
+    exec: Executor = db,
+): Promise<{
+    storageType: string;
+    storagePath: string;
+    mimeType: string;
+} | null> {
+    const [row] = await exec
+        .select({
+            storageType: recordingImages.storageType,
+            storagePath: recordingImages.storagePath,
+            mimeType: recordingImages.mimeType,
+        })
+        .from(recordingImages)
+        .innerJoin(recordings, eq(recordings.id, recordingImages.recordingId))
+        .where(
+            and(
+                eq(recordingImages.id, imageId),
+                eq(recordingImages.recordingId, recordingId),
+                eq(recordingImages.userId, userId),
+                eq(recordingImages.status, "ready"),
+                eq(recordings.userId, userId),
+                isNull(recordings.deletedAt),
+            ),
+        )
+        .limit(1);
+    if (!row?.storagePath || !row.mimeType) return null;
+    return {
+        storageType: row.storageType,
+        storagePath: row.storagePath,
+        mimeType: row.mimeType,
+    };
+}

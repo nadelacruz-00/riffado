@@ -3,13 +3,21 @@ import unzipper from "unzipper";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorageProvider } from "@/lib/storage/types";
 
-const { dbMock } = vi.hoisted(() => ({ dbMock: { select: vi.fn() } }));
+const { dbMock, imagesMock } = vi.hoisted(() => ({
+    dbMock: { select: vi.fn() },
+    imagesMock: { listReadyImagesByRecording: vi.fn() },
+}));
 
 vi.mock("@/db", () => ({ db: dbMock }));
 vi.mock("@/db/schema", () => ({
     recordings: "recordings",
     transcriptions: "transcriptions",
     aiEnhancements: "aiEnhancements",
+}));
+// Photos (#331) come from the photo owner module; empty unless a test sets them.
+vi.mock("@/lib/recordings/images", async (orig) => ({
+    ...(await orig<typeof import("@/lib/recordings/images")>()),
+    listReadyImagesByRecording: imagesMock.listReadyImagesByRecording,
 }));
 vi.mock("@/lib/encryption/fields", () => ({
     decryptText: (v: string | null) => (v == null ? v : `decrypted:${v}`),
@@ -122,6 +130,7 @@ describe("buildAndUploadExportArchive", () => {
 
     beforeEach(() => {
         vi.clearAllMocks();
+        imagesMock.listReadyImagesByRecording.mockResolvedValue(new Map());
         storage = new FakeStorage();
     });
 
@@ -324,4 +333,97 @@ describe("buildAndUploadExportArchive", () => {
 
         await expect(promise).rejects.toThrow(/abort/i);
     }, 5000);
+
+    it("adds a recording's photos in time order with time-based names (#331)", async () => {
+        storage.files.set("audio/rec-1.mp3", Buffer.from("audio"));
+        storage.files.set("u/images/rec-1/c_b.jpg", Buffer.from("photo-b"));
+        storage.files.set("u/images/rec-1/c_a.png", Buffer.from("photo-a"));
+        mockSelectSequence([
+            [
+                {
+                    id: "rec-1",
+                    userId: "user-1",
+                    filename: "enc-filename",
+                    startTime: new Date("2026-01-01T00:00:00Z"),
+                    endTime: new Date("2026-01-01T01:00:00Z"),
+                    duration: 3_600_000,
+                    filesize: 5,
+                    deviceSn: "SN1",
+                    storagePath: "audio/rec-1.mp3",
+                },
+            ],
+            [],
+            [],
+        ]);
+        imagesMock.listReadyImagesByRecording.mockResolvedValue(
+            new Map([
+                [
+                    "rec-1",
+                    [
+                        {
+                            recordingId: "rec-1",
+                            plaudImageId: "c_a",
+                            storagePath: "u/images/rec-1/c_a.png",
+                            mimeType: "image/png",
+                            capturedAt: new Date("2026-01-01T00:01:45Z"),
+                            offsetMs: 105_000,
+                        },
+                        {
+                            recordingId: "rec-1",
+                            plaudImageId: "c_b",
+                            storagePath: "u/images/rec-1/c_b.jpg",
+                            mimeType: "image/jpeg",
+                            capturedAt: new Date("2026-01-01T00:59:04Z"),
+                            offsetMs: 3_544_000,
+                        },
+                        {
+                            recordingId: "rec-1",
+                            plaudImageId: "c_gone",
+                            storagePath: "u/images/rec-1/c_gone.jpg",
+                            mimeType: "image/jpeg",
+                            capturedAt: null,
+                            offsetMs: null,
+                        },
+                    ],
+                ],
+            ]),
+        );
+
+        await buildAndUploadExportArchive({
+            userId: "user-1",
+            storage,
+            storageKey: "exports/user-1/job-6.zip",
+        });
+
+        const entries = await readZipEntries(storage.uploaded as Buffer);
+        const photoNames = [...entries.keys()].filter((n) =>
+            n.includes("/images/"),
+        );
+        expect(photoNames.map((n) => n.split("/images/")[1])).toEqual([
+            "01-01m45s.png",
+            "02-59m04s.jpg",
+        ]);
+        const first = [...entries.entries()].find(([n]) =>
+            n.endsWith("01-01m45s.png"),
+        );
+        expect(first?.[1].buffer.toString()).toBe("photo-a");
+        expect(first?.[1].compressionMethod).toBe(0);
+
+        const manifest = JSON.parse(
+            entries.get("manifest.json")?.buffer.toString("utf-8") ?? "{}",
+        );
+        const images = manifest.recordings[0].images;
+        expect(images).toHaveLength(3);
+        expect(images[0]).toMatchObject({
+            included: true,
+            mimeType: "image/png",
+            offsetMs: 105_000,
+            capturedAt: "2026-01-01T00:01:45.000Z",
+        });
+        expect(images[0].path).toMatch(/\/images\/01-01m45s\.png$/);
+        expect(images[2]).toMatchObject({ included: false, path: null });
+        expect(images[2].reason).toBeTruthy();
+        // Audio and the other entries are unchanged.
+        expect(manifest.recordings[0].audio.included).toBe(true);
+    });
 });

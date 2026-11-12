@@ -444,7 +444,25 @@ title state changes.
 #### GET `/v1/recordings/[id]`
 
 Return the stable recording shape plus inline `transcript` and `summary`
-objects when present.
+objects when present, and an `images` array with the recording's Plaud
+Highlight photos (empty when there are none). Photos are synced when
+"Import Plaud content" is on, for Plaud 4.0 accounts.
+
+```json
+"images": [
+  {
+    "id": "img_8f2k",
+    "mime_type": "image/jpeg",
+    "size_bytes": 1986858,
+    "captured_at": "2026-11-10T05:37:09.000Z",
+    "offset_ms": 105920,
+    "url": "/api/v1/recordings/abc123/images/img_8f2k"
+  }
+]
+```
+
+`offset_ms` is the time in the recording when the photo was taken. Photos are
+listed in that order.
 
 #### GET `/v1/recordings/[id]/transcript`
 
@@ -455,6 +473,14 @@ not been transcribed.
 
 Return a `302` redirect to a presigned S3 URL for S3 storage, or stream local
 audio with byte-range support for local storage.
+
+#### GET `/v1/recordings/[id]/images/[imageId]`
+
+Return one photo from the recording's `images` array: a `302` redirect to a
+presigned S3 URL for S3 storage, or the image bytes with their `Content-Type`
+for local storage. Uses the same API key and rate limit as the audio endpoint.
+Returns `404` for an unknown photo, another user's photo, or a deleted
+recording.
 
 ---
 
@@ -472,7 +498,9 @@ Export recordings in various formats.
 
 #### POST `/backup`
 
-Create backup of all user data.
+Create backup of all user data. The archive holds each recording's audio,
+transcript, summary and Plaud Highlight photos (`<recording>/images/<nn>-<mm>m<ss>s.<ext>`,
+in recording-time order), plus a `manifest.json` that lists them.
 
 **Response:**
 ```json

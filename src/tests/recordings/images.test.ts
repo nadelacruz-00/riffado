@@ -10,8 +10,10 @@ const {
     deleteImagesForRecording,
     formatImageOffset,
     imageExportName,
+    imageExtensionOf,
     imageStorageKey,
     listImageStoragePaths,
+    readyImagesByUserQuery,
     readyImagesQuery,
     liveImageBytesByUser,
     retryableImageCondition,
@@ -210,5 +212,31 @@ describe("photo storage bytes", () => {
         expect(sql).toContain('"recording_images"."status" = $2');
         expect(sql).toContain('"recordings"."deleted_at" is null');
         expect(params).toEqual(["user_1", "ready"]);
+    });
+});
+
+describe("readyImagesByUserQuery", () => {
+    it("lists the user's ready photos on live recordings, grouped and in time order", () => {
+        const { sql, params } = readyImagesByUserQuery(
+            mockDb,
+            "user_1",
+        ).toSQL();
+        expect(sql).toContain('"recording_images"."status" = $2');
+        expect(sql).toContain('"recordings"."deleted_at" is null');
+        expect(sql).toMatch(
+            /order by "recording_images"\."recording_id" asc, "recording_images"\."offset_ms" asc nulls last, "recording_images"\."plaud_image_id" asc$/,
+        );
+        expect(params).toEqual(["user_1", "ready", "user_1"]);
+    });
+});
+
+describe("imageExtensionOf", () => {
+    it.each([
+        ["u/images/r/c_a.JPG", "jpg"],
+        ["u/images/r/c_a.png", "png"],
+        ["u/images/r/c_a.svg", null],
+        [null, null],
+    ])("%s -> %s", (path, ext) => {
+        expect(imageExtensionOf(path)).toBe(ext);
     });
 });
