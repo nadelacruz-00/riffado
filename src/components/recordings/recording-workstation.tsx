@@ -11,6 +11,7 @@ import {
 } from "@/components/dashboard/transcription-panel";
 import { LocalTime } from "@/components/local-time";
 import { DownloadAudioButton } from "@/components/recordings/download-audio-button";
+import { RecordingPhotos } from "@/components/recordings/recording-photos";
 import { RecordingTitle } from "@/components/recordings/recording-title";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -185,6 +186,11 @@ export function RecordingWorkstation({
                         onTranscribe={handleTranscribe}
                         onTranscribeComplete={refresh}
                     />
+                    <RecordingPhotos
+                        recordingId={recording.id}
+                        recordingTitle={filename}
+                        imageCount={recording.imageCount ?? 0}
+                    />
 
                     {/* Metadata */}
                     <Card>
@@ -253,9 +259,9 @@ export function RecordingWorkstation({
                         <DialogTitle>Delete this recording?</DialogTitle>
                         <DialogDescription>
                             This permanently removes the audio file,
-                            transcription, and AI summary from Riffado. The
-                            recording on your Plaud account is not affected, but
-                            it will not be re-synced to Riffado.
+                            transcription, AI summary and photos from Riffado.
+                            The recording on your Plaud account is not affected,
+                            but it will not be re-synced to Riffado.
                         </DialogDescription>
                     </DialogHeader>
                     <DialogFooter>

@@ -12,6 +12,7 @@ import { requireAuth } from "@/lib/auth-server";
 import { decryptText } from "@/lib/encryption/fields";
 import { env } from "@/lib/env";
 import { isAdminEmail } from "@/lib/hosted/admin/guard";
+import { countImagesByRecording } from "@/lib/recordings/images";
 import { initialSettingsFromRow } from "@/lib/settings/initial-settings";
 import { serializeRecording } from "@/types/recording";
 
@@ -24,6 +25,7 @@ export default async function DashboardPage() {
         userSummaryRows,
         [settingsRow],
         [connectionRow],
+        imageCounts,
     ] = await Promise.all([
         db
             .select({
@@ -77,6 +79,7 @@ export default async function DashboardPage() {
             .from(plaudConnections)
             .where(eq(plaudConnections.userId, session.user.id))
             .limit(1),
+        countImagesByRecording(session.user.id),
     ]);
     const summaryIds = new Set(userSummaryRows.map((r) => r.recordingId));
     const transcriptIds = new Set(userTranscriptions.map((t) => t.recordingId));
@@ -94,6 +97,7 @@ export default async function DashboardPage() {
                 waveformPeaks: Array.isArray(waveformPeaks)
                     ? (waveformPeaks as number[])
                     : null,
+                imageCount: imageCounts.get(r.id) ?? 0,
             },
         ),
     );

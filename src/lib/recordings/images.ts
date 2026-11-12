@@ -1,6 +1,10 @@
 import { and, asc, eq, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { recordingImages, recordings } from "@/db/schema";
+import { IMAGE_EXTENSIONS, type ImageExtension } from "./images-shared";
+
+export { formatImageOffset, imageExportName } from "./image-format";
+export { IMAGE_EXTENSIONS, type ImageExtension };
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Executor = typeof db | Tx;
@@ -9,10 +13,6 @@ export type RecordingImageStatus = "pending" | "ready" | "failed";
 
 /** A `failed` photo is retried while its attempts stay below this. */
 export const IMAGE_MAX_ATTEMPTS = 5;
-
-/** File extensions a stored photo may have (from sniffed magic bytes). */
-export const IMAGE_EXTENSIONS = ["jpg", "png", "webp", "heic"] as const;
-export type ImageExtension = (typeof IMAGE_EXTENSIONS)[number];
 
 const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -36,36 +36,6 @@ export function imageStorageKey(
         throw new Error("Unsupported photo extension");
     }
     return `${userId}/images/${recordingId}/${plaudImageId}.${ext}`;
-}
-
-/** Offset from the recording start as `m:ss`, or `h:mm:ss` from one hour. */
-export function formatImageOffset(offsetMs: number): string {
-    const totalSeconds = Math.max(0, Math.floor(offsetMs / 1000));
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = String(totalSeconds % 60).padStart(2, "0");
-    return hours > 0
-        ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}`
-        : `${minutes}:${seconds}`;
-}
-
-/**
- * Export file name `<nn>-<mm>m<ss>s.<ext>`: `nn` is the 1-based position,
- * zero-padded to 2 digits (3 when the recording has 100+ photos); minutes
- * are total minutes. Without an offset the name is `<nn>.<ext>`.
- */
-export function imageExportName(
-    index: number,
-    total: number,
-    offsetMs: number | null,
-    ext: ImageExtension,
-): string {
-    const nn = String(index + 1).padStart(total >= 100 ? 3 : 2, "0");
-    if (offsetMs === null) return `${nn}.${ext}`;
-    const totalSeconds = Math.max(0, Math.floor(offsetMs / 1000));
-    const mm = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
-    const ss = String(totalSeconds % 60).padStart(2, "0");
-    return `${nn}-${mm}m${ss}s.${ext}`;
 }
 
 /** Query for one recording's ready photos, oldest offset first, owner and live recording only. */
@@ -547,4 +517,61 @@ export async function getReadyImage(
         storagePath: row.storagePath,
         mimeType: row.mimeType,
     };
+}
+
+/** Number of photo rows (any status) per recording of the user. */
+export async function countImagesByRecording(
+    userId: string,
+    exec: Executor = db,
+): Promise<Map<string, number>> {
+    const rows = await exec
+        .select({
+            recordingId: recordingImages.recordingId,
+            n: sql<number>`count(*)::int`,
+        })
+        .from(recordingImages)
+        .where(eq(recordingImages.userId, userId))
+        .groupBy(recordingImages.recordingId);
+    return new Map(rows.map((r) => [r.recordingId, Number(r.n)]));
+}
+
+/**
+ * Non-ready photos of one recording, by what the page tells the user:
+ * still syncing (pending or retryable failed), waiting for storage space,
+ * or failed for good (5 attempts or unsupported type).
+ */
+export async function imageStatusCounts(
+    userId: string,
+    recordingId: string,
+    exec: Executor = db,
+): Promise<{ syncing: number; storageCap: number; failed: number }> {
+    const rows = await exec
+        .select({
+            status: recordingImages.status,
+            lastError: recordingImages.lastError,
+            attempts: recordingImages.attempts,
+        })
+        .from(recordingImages)
+        .where(
+            and(
+                eq(recordingImages.userId, userId),
+                eq(recordingImages.recordingId, recordingId),
+                ne(recordingImages.status, "ready"),
+            ),
+        );
+    const counts = { syncing: 0, storageCap: 0, failed: 0 };
+    for (const r of rows) {
+        if (r.status === "pending" && r.lastError === "storage_cap") {
+            counts.storageCap++;
+        } else if (
+            r.status === "failed" &&
+            (r.attempts >= IMAGE_MAX_ATTEMPTS ||
+                r.lastError === "unsupported_type")
+        ) {
+            counts.failed++;
+        } else {
+            counts.syncing++;
+        }
+    }
+    return counts;
 }

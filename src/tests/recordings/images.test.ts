@@ -11,6 +11,7 @@ const {
     formatImageOffset,
     imageExportName,
     imageExtensionOf,
+    imageStatusCounts,
     imageStorageKey,
     listImageStoragePaths,
     readyImagesByUserQuery,
@@ -238,5 +239,25 @@ describe("imageExtensionOf", () => {
         [null, null],
     ])("%s -> %s", (path, ext) => {
         expect(imageExtensionOf(path)).toBe(ext);
+    });
+});
+
+describe("imageStatusCounts", () => {
+    it("sorts not-ready photos into syncing, storage-cap and failed-for-good", async () => {
+        const rows = [
+            { status: "pending", lastError: null, attempts: 0 },
+            { status: "failed", lastError: "http_403", attempts: 2 },
+            { status: "pending", lastError: "storage_cap", attempts: 0 },
+            { status: "failed", lastError: "http_500", attempts: 5 },
+            { status: "failed", lastError: "unsupported_type", attempts: 1 },
+        ];
+        const exec = {
+            select: () => ({ from: () => ({ where: async () => rows }) }),
+        };
+        expect(await imageStatusCounts("u", "r", exec as never)).toEqual({
+            syncing: 2,
+            storageCap: 1,
+            failed: 2,
+        });
     });
 });

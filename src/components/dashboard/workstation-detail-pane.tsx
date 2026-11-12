@@ -3,6 +3,7 @@
 import { ArrowLeft } from "lucide-react";
 import { RecordingPlayer } from "@/components/dashboard/recording-player";
 import { TranscriptionPanel } from "@/components/dashboard/transcription-panel";
+import { RecordingPhotos } from "@/components/recordings/recording-photos";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -109,6 +110,11 @@ export function WorkstationDetailPane({
                         isTranscribing={isCurrentTranscribing}
                         onTranscribe={onTranscribe}
                         onTranscribeComplete={onTranscribeComplete}
+                    />
+                    <RecordingPhotos
+                        recordingId={currentRecording.id}
+                        recordingTitle={currentRecording.filename}
+                        imageCount={currentRecording.imageCount ?? 0}
                     />
                 </>
             ) : (

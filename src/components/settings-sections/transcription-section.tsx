@@ -374,12 +374,13 @@ export function TranscriptionSection() {
                             htmlFor="import-plaud-content"
                             className="text-base"
                         >
-                            Import Plaud transcripts and summaries
+                            Import Plaud transcripts, summaries and photos
                         </Label>
                         <p className="text-sm text-muted-foreground">
                             When Plaud already transcribed a recording, import
                             its transcript and summary on sync instead of
-                            re-doing the work with your own AI provider.
+                            re-doing the work with your own AI provider. Also
+                            imports photos you took as Highlights.
                         </p>
                     </div>
                     <Switch
