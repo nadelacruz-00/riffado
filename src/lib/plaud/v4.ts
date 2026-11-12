@@ -148,6 +148,30 @@ function readyObject(
     );
 }
 
+/**
+ * Audio object to download. Plaud keeps the recorder's raw upload as `AUDIO`
+ * (encrypted for 4.0 accounts, so not a playable container) and the
+ * player-ready MP3 as `AUDIO_TRANSCODED`. Prefer the transcoded copy, and
+ * fall back to `AUDIO` for recordings that only carry it (already Ogg/Opus).
+ */
+export function pickAudioObject(
+    detail: PlaudV4FileDetail | undefined,
+): PlaudV4FileObject | undefined {
+    const objects = detail?.objects ?? [];
+    return (
+        objects.find(
+            (o) =>
+                o.object_type === "AUDIO_TRANSCODED" &&
+                Boolean(o.content_url || o.content_id),
+        ) ??
+        objects.find(
+            (o) =>
+                o.object_type === "AUDIO" &&
+                Boolean(o.content_url || o.content_id),
+        )
+    );
+}
+
 /** Fill device, size, timezone and content flags from a v4 file detail. */
 export function applyPlaudV4Detail(
     recording: PlaudRecording,
@@ -155,7 +179,7 @@ export function applyPlaudV4Detail(
 ): PlaudRecording {
     if (!detail) return recording;
     const meta = detail.meta ?? {};
-    const audio = detail.objects?.find((o) => o.object_type === "AUDIO");
+    const audio = pickAudioObject(detail);
     const start = meta.start_time ?? recording.start_time;
     const duration = meta.duration ?? recording.duration;
     const offset = timeZoneOffsetMinutes(meta.timezone_iana, start);

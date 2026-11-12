@@ -8,7 +8,10 @@ import {
     userSettings,
 } from "@/db/schema";
 import { buildChatCompletionParams } from "@/lib/ai/chat-completion-params";
-import { supportsEnhancement } from "@/lib/ai/provider-presets";
+import {
+    resolveEnhancementModel,
+    supportsEnhancement,
+} from "@/lib/ai/provider-presets";
 import {
     getAiOutputLanguageDirective,
     getDefaultSummaryPromptConfig,
@@ -196,21 +199,11 @@ export async function generateSummaryForRecording(
 
     // The configured "default model" on apiCredentials can be a Whisper
     // (transcription-only) id when the user only set up a transcription
-    // provider. Pick a sane lightweight chat model per provider in that
-    // case so summarization still works.
-    let model = credentials.defaultModel || "gpt-4o-mini";
-    if (model.includes("whisper")) {
-        const baseUrl = credentials.baseUrl || "";
-        if (baseUrl.includes("groq")) {
-            model = "llama-3.1-8b-instant";
-        } else if (baseUrl.includes("together")) {
-            model = "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo";
-        } else if (baseUrl.includes("openrouter")) {
-            model = "openai/gpt-4o-mini";
-        } else {
-            model = "gpt-4o-mini";
-        }
-    }
+    // provider. Pick a chat model the provider actually serves in that case.
+    const model = resolveEnhancementModel(
+        credentials.provider,
+        credentials.defaultModel,
+    );
 
     // Decrypt the transcript before sending it to the LLM. Plaintext is
     // the LLM's input contract; ciphertext lives only in the DB.

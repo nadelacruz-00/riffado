@@ -10,7 +10,10 @@ import {
     userSettings,
 } from "@/db/schema";
 import { generateTitleFromTranscription } from "@/lib/ai/generate-title";
-import { findPreset, getTranscriptionStyle } from "@/lib/ai/provider-presets";
+import {
+    findPreset,
+    getTranscriptionStyleForModel,
+} from "@/lib/ai/provider-presets";
 import { decrypt } from "@/lib/encryption";
 import { decryptText, encryptText } from "@/lib/encryption/fields";
 import { isHostedLockedOut } from "@/lib/entitlements";
@@ -436,19 +439,9 @@ async function transcribeRecordingInner(
             // - "elevenlabs": ElevenLabs Scribe /v1/speech-to-text (xi-api-key,
             //   diarized words[] response)
             // - "chat": OpenAI-compatible chat completions with input_audio
-            //   (OpenRouter today; #122 -- /v1/audio/transcriptions 404s there)
             // - "whisper": OpenAI-compatible /v1/audio/transcriptions
-            const transcriptionStyle = getTranscriptionStyle(
-                credentials.provider,
-            );
-
-            if (
-                transcriptionStyle === "elevenlabs" &&
-                recording.filesize > ELEVENLABS_MAX_FILE_BYTES
-            ) {
-                throw new ElevenLabsFileTooLargeError(recording.filesize);
-            }
-
+            // OpenRouter serves Whisper on /audio/transcriptions as well, so
+            // the model decides that route rather than the preset alone.
             const storage = await createUserStorageProvider(userId);
             const decryptedFilename = decryptText(recording.filename);
             const model =
@@ -456,8 +449,19 @@ async function transcribeRecordingInner(
                 credentials.defaultModel ||
                 findPreset(credentials.provider)?.defaultModel ||
                 "whisper-1";
+            const transcriptionStyle = getTranscriptionStyleForModel(
+                credentials.provider,
+                model,
+            );
             persistProvider = credentials.provider;
             persistModel = model;
+
+            if (
+                transcriptionStyle === "elevenlabs" &&
+                recording.filesize > ELEVENLABS_MAX_FILE_BYTES
+            ) {
+                throw new ElevenLabsFileTooLargeError(recording.filesize);
+            }
 
             if (transcriptionStyle === "elevenlabs") {
                 try {

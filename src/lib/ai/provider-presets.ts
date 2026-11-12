@@ -15,6 +15,13 @@ export interface ProviderPreset {
      * to `false`.
      */
     supportsEnhancement?: boolean;
+    /**
+     * Lightweight chat model for enhancements when the stored credential
+     * model is a transcription id (or unset). Required wherever `whisper-*`
+     * is the default model, because `gpt-4o-mini` is not served by every
+     * provider; falls back to `gpt-4o-mini` when omitted.
+     */
+    enhancementModel?: string;
 }
 
 export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
@@ -37,6 +44,9 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
         placeholder: "gsk_...",
         defaultModel: "whisper-large-v3-turbo",
         transcriptionStyle: "whisper",
+        // Groq dropped the llama-3.x ids; gpt-oss-20b answers with an empty
+        // completion (reasoning budget), qwen3.8-27b returns plain text.
+        enhancementModel: "qwen/qwen3.8-27b",
         knownTranscriptionModels: [
             "whisper-large-v3-turbo",
             "whisper-large-v3",
@@ -136,9 +146,38 @@ export function getTranscriptionStyle(
 }
 
 /**
+ * Transcription route for a concrete model. A preset's style is the default
+ * for its chat/audio model, but OpenRouter also serves Whisper on
+ * `/audio/transcriptions`, so a transcription id there takes the "whisper"
+ * route instead of chat completions.
+ */
+export function getTranscriptionStyleForModel(
+    providerName: string,
+    model: string | null | undefined,
+): TranscriptionStyle {
+    const style = getTranscriptionStyle(providerName);
+    if (style !== "chat" || !model) return style;
+    return /whisper|parakeet|scribe/i.test(model) ? "whisper" : style;
+}
+
+/**
  * Whether a provider can run AI enhancements (summaries, titles) via
  * `chat.completions`. Unknown/custom provider names default to `true`.
  */
 export function supportsEnhancement(providerName: string): boolean {
     return findPreset(providerName)?.supportsEnhancement ?? true;
+}
+
+/**
+ * Model for `chat.completions` (titles, summaries). A credential whose model
+ * is a transcription id (whisper/parakeet/scribe) or unset needs a provider
+ * chat model; `gpt-4o-mini` is only a safe last resort for OpenAI and
+ * OpenAI-compatible proxies.
+ */
+export function resolveEnhancementModel(
+    providerName: string,
+    model: string | null | undefined,
+): string {
+    if (model && !/whisper|parakeet|scribe/i.test(model)) return model;
+    return findPreset(providerName)?.enhancementModel ?? "gpt-4o-mini";
 }
