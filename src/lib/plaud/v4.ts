@@ -199,6 +199,68 @@ export function applyPlaudV4Detail(
     };
 }
 
+/** A Plaud Highlight photo: its content id, presigned URL (if present) and offset. */
+export interface PlaudHighlightImage {
+    plaudImageId: string;
+    url: string | null;
+    offsetMs: number | null;
+}
+
+const CONTENT_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** The recording's `MARK_MEMO` object (Highlights), if any. */
+export function findMarkMemoObject(
+    detail: PlaudV4FileDetail | undefined,
+): PlaudV4FileObject | undefined {
+    return detail?.objects?.find((o) => o.object_type === "MARK_MEMO");
+}
+
+/**
+ * Highlight photos of a recording: every `MARK_MEMO` entry with a
+ * `picture_link`, resolved through `relation_content_mapping`. Other ids in
+ * the mapping (such as the summary card image) are ignored. Deduplicated by
+ * id and ordered by offset, entries without an offset last.
+ */
+export function selectHighlightImages(
+    detail: PlaudV4FileDetail | undefined,
+    memo: unknown,
+): PlaudHighlightImage[] {
+    if (!Array.isArray(memo)) return [];
+    const mapping = detail?.relation_content_mapping ?? {};
+    const byId = new Map<string, PlaudHighlightImage>();
+    for (const entry of memo) {
+        if (!entry || typeof entry !== "object") continue;
+        const { picture_link, timestamp } = entry as {
+            picture_link?: unknown;
+            timestamp?: unknown;
+        };
+        if (
+            typeof picture_link !== "string" ||
+            !CONTENT_ID.test(picture_link)
+        ) {
+            continue;
+        }
+        if (byId.has(picture_link)) continue;
+        const url = mapping[picture_link];
+        byId.set(picture_link, {
+            plaudImageId: picture_link,
+            url: typeof url === "string" && url ? url : null,
+            offsetMs:
+                typeof timestamp === "number" &&
+                Number.isFinite(timestamp) &&
+                timestamp >= 0
+                    ? Math.round(timestamp)
+                    : null,
+        });
+    }
+    return [...byId.values()].sort(
+        (a, b) =>
+            (a.offsetMs ?? Number.POSITIVE_INFINITY) -
+                (b.offsetMs ?? Number.POSITIVE_INFINITY) ||
+            a.plaudImageId.localeCompare(b.plaudImageId),
+    );
+}
+
 const V4_CONTENT_TYPES: Record<string, string> = {
     TRANSCRIPT: "transaction",
     SUMMARY: "auto_sum_note",

@@ -1,0 +1,64 @@
+{
+    "detail": {
+        "node": {
+            "node_id": "n_file",
+            "name": "Lecture week 6",
+            "version_ms": 1794293332378
+        },
+        "meta": {
+            "file_id": "f_photo",
+            "duration": 4310640,
+            "start_time": 1794288924000,
+            "version_ms": 1794293332378,
+            "extra": { "highlight_file_id": "placeholder-highlight-file-id" }
+        },
+        "objects": [
+            {
+                "object_id": "o_audio",
+                "object_type": "AUDIO_TRANSCODED",
+                "content_id": "c_audio",
+                "content_url": "https://example-bucket.s3-accelerate.amazonaws.com/audio.mp3?sig=placeholder",
+                "mime_type": "audio/mpeg",
+                "task_status": 1,
+                "relation_content_ids": []
+            },
+            {
+                "object_id": "o_summary",
+                "object_type": "SUMMARY",
+                "content_id": "c_summary_text",
+                "content_url": "https://example-bucket.s3-accelerate.amazonaws.com/ai_content.md.gz?sig=placeholder",
+                "mime_type": "text/vnd.plaud.summary+markdown",
+                "task_status": 1,
+                "relation_content_ids": ["c_01summarycard"]
+            },
+            {
+                "object_id": "o_memo",
+                "object_type": "MARK_MEMO",
+                "content_id": "c_memo",
+                "content_url": "https://example-bucket.s3-accelerate.amazonaws.com/mark_memo.json?sig=placeholder",
+                "mime_type": "text/vnd.plaud.mark_memo+json",
+                "task_status": 1,
+                "relation_content_ids": ["c_01highlighta", "c_01highlightb"]
+            }
+        ],
+        "relation_content_mapping": {
+            "c_01highlighta": "https://example-bucket.s3-accelerate.amazonaws.com/a.jpg?sig=placeholder",
+            "c_01highlightb": "https://example-bucket.s3-accelerate.amazonaws.com/b.jpg?sig=placeholder",
+            "c_01summarycard": "https://example-bucket.s3-accelerate.amazonaws.com/card.png?sig=placeholder"
+        }
+    },
+    "memo": [
+        {
+            "picture_local_path": "placeholder/local/path/b.jpg",
+            "mark_type": 2,
+            "picture_link": "c_01highlightb",
+            "timestamp": 353000
+        },
+        {
+            "picture_local_path": "placeholder/local/path/a.jpg",
+            "mark_type": 2,
+            "picture_link": "c_01highlighta",
+            "timestamp": 105920
+        }
+    ]
+}

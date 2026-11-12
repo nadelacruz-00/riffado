@@ -1,11 +1,13 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { RecordingPlayerControls } from "@/components/dashboard/recording-player-controls";
 import { RecordingPlayerHeader } from "@/components/dashboard/recording-player-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { usePlaybackEngine } from "@/hooks/use-playback-engine";
 import { usePlaybackKeyboard } from "@/hooks/use-playback-keyboard";
 import { useWaveform } from "@/hooks/use-waveform";
+import { onRecordingSeek } from "@/lib/recordings/seek-event";
 import type { Recording } from "@/types/recording";
 
 interface RecordingPlayerProps {
@@ -60,6 +62,31 @@ export function RecordingPlayer({
         initialVolume,
         initialAutoPlayNext,
     });
+
+    const togglePlayRef = useRef(togglePlayPause);
+    togglePlayRef.current = togglePlayPause;
+
+    // Photo time badges (#331) ask to jump to a moment and play.
+    useEffect(
+        () =>
+            onRecordingSeek(recording.id, (offsetMs) => {
+                const audio = audioRef.current;
+                if (!audio) return;
+                const apply = () => {
+                    audio.currentTime = Math.max(0, offsetMs / 1000);
+                    if (audio.paused) togglePlayRef.current();
+                };
+                if (!audio.duration || Number.isNaN(audio.duration)) {
+                    audio.addEventListener("loadedmetadata", apply, {
+                        once: true,
+                    });
+                    audio.load();
+                } else {
+                    apply();
+                }
+            }),
+        [recording.id, audioRef],
+    );
 
     usePlaybackKeyboard({
         onToggle: togglePlayPause,

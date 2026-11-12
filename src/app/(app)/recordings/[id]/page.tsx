@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { recordings, transcriptions, userSettings } from "@/db/schema";
 import { requireAuth, requireCompletedOnboarding } from "@/lib/auth-server";
 import { decryptText } from "@/lib/encryption/fields";
+import { countImagesByRecording } from "@/lib/recordings/images";
 import { resolvePrimaryTranscript } from "@/lib/v1/serialize";
 
 interface RecordingDetailPageProps {
@@ -43,7 +44,7 @@ export default async function RecordingDetailPage({
     // 75 / 1x / false defaults regardless of what the user picked
     // in Settings → Playback (the dashboard route already plumbs
     // these through Workstation).
-    const [transcriptRows, [settingsRow]] = await Promise.all([
+    const [transcriptRows, [settingsRow], imageCounts] = await Promise.all([
         db
             .select()
             .from(transcriptions)
@@ -65,6 +66,7 @@ export default async function RecordingDetailPage({
             .from(userSettings)
             .where(eq(userSettings.userId, session.user.id))
             .limit(1),
+        countImagesByRecording(session.user.id),
     ]);
 
     // Order primary-first (per the user's preferred source) so the switcher
@@ -101,6 +103,7 @@ export default async function RecordingDetailPage({
                 filename: decryptText(recording.filename),
                 startTime: recording.startTime.toISOString(),
                 waveformPeaks,
+                imageCount: imageCounts.get(recording.id) ?? 0,
             }}
             initialPlaybackSpeed={settingsRow?.defaultPlaybackSpeed ?? 1.0}
             initialVolume={settingsRow?.defaultVolume ?? 75}

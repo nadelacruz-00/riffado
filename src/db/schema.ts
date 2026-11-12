@@ -302,6 +302,11 @@ export const recordings = pgTable(
         // from storage at delete time; this row is retained only as a marker
         // keyed by plaudFileId. See issue #56.
         deletedAt: timestamp("deleted_at"),
+        // plaudVersion at which Plaud Highlight photos were last listed.
+        // Null = never checked (#331).
+        imagesCheckedVersion: varchar("images_checked_version", {
+            length: 50,
+        }),
         createdAt: timestamp("created_at").notNull().defaultNow(),
         updatedAt: timestamp("updated_at").notNull().defaultNow(),
     },
@@ -392,6 +397,48 @@ export const aiEnhancements = pgTable(
     (table) => ({
         // Each user can have at most one enhancement per recording
         userRecordingUnique: unique().on(table.recordingId, table.userId),
+    }),
+);
+
+// Plaud Highlight photos attached to a recording (#331).
+export const recordingImages = pgTable(
+    "recording_images",
+    {
+        id: text("id")
+            .primaryKey()
+            .$defaultFn(() => nanoid()),
+        recordingId: text("recording_id")
+            .notNull()
+            .references(() => recordings.id, { onDelete: "cascade" }),
+        userId: text("user_id")
+            .notNull()
+            .references(() => users.id, { onDelete: "cascade" }),
+        // Plaud content id of the photo (`c_<hex>` in relation_content_mapping).
+        plaudImageId: varchar("plaud_image_id", { length: 255 }).notNull(),
+        storageType: varchar("storage_type", { length: 10 }).notNull(), // 'local' or 's3'
+        // Null until the photo is downloaded and stored.
+        storagePath: text("storage_path"),
+        // From sniffed magic bytes, not from Plaud.
+        mimeType: varchar("mime_type", { length: 100 }),
+        sizeBytes: integer("size_bytes"),
+        capturedAt: timestamp("captured_at"),
+        // Milliseconds from the recording start (Plaud MARK_MEMO timestamp).
+        offsetMs: integer("offset_ms"),
+        status: varchar("status", { length: 16 }).notNull().default("pending"), // 'pending' | 'ready' | 'failed'
+        attempts: integer("attempts").notNull().default(0),
+        // Short error code, never a URL.
+        lastError: text("last_error"),
+        createdAt: timestamp("created_at").notNull().defaultNow(),
+        updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    },
+    (table) => ({
+        recordingIdIdx: index("recording_images_recording_id_idx").on(
+            table.recordingId,
+        ),
+        userIdIdx: index("recording_images_user_id_idx").on(table.userId),
+        recordingPlaudImageUnique: unique(
+            "recording_images_recording_id_plaud_image_id_unique",
+        ).on(table.recordingId, table.plaudImageId),
     }),
 );
 

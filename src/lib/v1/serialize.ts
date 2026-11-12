@@ -8,6 +8,7 @@ import {
     userSettings,
 } from "@/db/schema";
 import { decryptJsonField, decryptText } from "@/lib/encryption/fields";
+import { listReadyImages, type ReadyImage } from "@/lib/recordings/images";
 
 type RecordingRow = typeof recordings.$inferSelect;
 type DeviceRow = typeof plaudDevices.$inferSelect;
@@ -59,6 +60,18 @@ export type V1Recording = {
     };
 };
 
+/** A Plaud Highlight photo of a recording (#331). */
+export type V1Image = {
+    id: string;
+    mime_type: string | null;
+    size_bytes: number | null;
+    captured_at: string | null;
+    /** Milliseconds from the recording start. */
+    offset_ms: number | null;
+    /** API path that returns the photo bytes (same API key). */
+    url: string;
+};
+
 export type V1RecordingDetail = V1Recording & {
     /** The primary transcript (per the user's preferred source). Kept singular
      * for backward compatibility with clients that expect one transcript. */
@@ -67,6 +80,8 @@ export type V1RecordingDetail = V1Recording & {
      * plus a Plaud-imported one). May hold 0, 1, or more entries. */
     transcripts: V1Transcript[];
     summary: V1Summary | null;
+    /** Ready Plaud Highlight photos, in recording-time order. */
+    images: V1Image[];
 };
 
 function toIso(value: Date): string {
@@ -195,12 +210,27 @@ export function resolvePrimaryTranscript(
     );
 }
 
+export function serializeImage(
+    recordingId: string,
+    image: ReadyImage,
+): V1Image {
+    return {
+        id: image.id,
+        mime_type: image.mimeType,
+        size_bytes: image.sizeBytes,
+        captured_at: image.capturedAt ? toIso(image.capturedAt) : null,
+        offset_ms: image.offsetMs,
+        url: `/api/v1/recordings/${recordingId}/images/${image.id}`,
+    };
+}
+
 export function serializeRecordingDetail(
     recording: RecordingRow,
     device: DeviceRow | null,
     transcripts: TranscriptionRow[],
     enhancement: AiEnhancementRow | null,
     preferredSource = "plaud",
+    images: ReadyImage[] = [],
 ): V1RecordingDetail {
     const primary = resolvePrimaryTranscript(transcripts, preferredSource);
     return {
@@ -213,6 +243,7 @@ export function serializeRecordingDetail(
             .map(serializeTranscript)
             .filter((t): t is V1Transcript => t !== null),
         summary: serializeSummary(enhancement),
+        images: images.map((image) => serializeImage(recording.id, image)),
     };
 }
 
@@ -283,5 +314,6 @@ export async function getV1RecordingDetailForUser(
         transcriptRows,
         row.enhancement,
         await getPreferredTranscriptSource(userId),
+        await listReadyImages(userId, recordingId),
     );
 }

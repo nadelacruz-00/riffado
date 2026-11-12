@@ -14,6 +14,10 @@ import {
     MAX_RECORDING_TITLE_LENGTH,
     normalizeRecordingTitle,
 } from "@/lib/recordings/filename";
+import {
+    deleteImagesForRecording,
+    listImageStoragePathsForRecording,
+} from "@/lib/recordings/images";
 import { createUserStorageProvider } from "@/lib/storage/factory";
 import { emitEvent } from "@/lib/webhooks/emit";
 import { createRedactedWebhookPayload } from "@/lib/webhooks/payload";
@@ -248,6 +252,30 @@ export const DELETE = apiHandler<IdContext>(async (request, context) => {
         // Object already absent — continue with tombstone.
     }
 
+    // 1b. Photo files (#331), same rules as the audio file.
+    const photoPaths = await listImageStoragePathsForRecording(userId, id);
+    if (photoPaths.length > 0) {
+        const storage = await createUserStorageProvider(userId);
+        for (const path of photoPaths) {
+            try {
+                await storage.deleteFile(path);
+            } catch (storageError) {
+                if (!isStorageNotFoundError(storageError)) {
+                    console.error(
+                        `Failed to delete photo file for recording ${id}:`,
+                        storageError,
+                    );
+                    throw new AppError(
+                        ErrorCode.STORAGE_ERROR,
+                        "Failed to delete recording photos. Please retry.",
+                        500,
+                    );
+                }
+            }
+        }
+    }
+
+    let removedPhotoPaths: string[] = [];
     // 2. Atomic DB writes: child rows, webhook delivery payload redaction,
     //    and tombstone in one transaction.
     const didTombstone = await db.transaction(async (tx) => {
@@ -290,6 +318,8 @@ export const DELETE = apiHandler<IdContext>(async (request, context) => {
                 ),
             );
 
+        removedPhotoPaths = await deleteImagesForRecording(tx, userId, id);
+
         await tx
             .update(webhookDeliveries)
             .set({
@@ -320,6 +350,22 @@ export const DELETE = apiHandler<IdContext>(async (request, context) => {
 
         return tombstoned.length > 0;
     });
+
+    // Photos committed between the file deletion above and the lock.
+    const latePhotoPaths = removedPhotoPaths.filter(
+        (p) => !photoPaths.includes(p),
+    );
+    if (latePhotoPaths.length > 0) {
+        const storage = await createUserStorageProvider(userId);
+        for (const path of latePhotoPaths) {
+            await storage.deleteFile(path).catch((error) => {
+                console.error(
+                    `Failed to delete late photo file for recording ${id}:`,
+                    error,
+                );
+            });
+        }
+    }
 
     if (didTombstone) {
         await emitEvent("recording.deleted", userId, id);

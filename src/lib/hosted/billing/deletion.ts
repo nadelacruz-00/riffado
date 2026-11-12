@@ -8,6 +8,7 @@ import {
 import { users } from "@/db/schema";
 import { env } from "@/lib/env";
 import { sendAccountDeletedEmail } from "@/lib/notifications/email";
+import { listImageStoragePaths } from "@/lib/recordings/images";
 import { createStorageProvider } from "@/lib/storage/factory";
 
 const DEFAULT_BATCH_LIMIT = 25;
@@ -22,7 +23,7 @@ export interface DeletionResult {
 }
 
 /**
- * Delete a single user's stored audio objects, then the user row.
+ * Delete a single user's stored audio and photo objects, then the user row.
  *
  * Storage cleanup is best-effort: a flaky storage call for one object
  * does not block the user-row delete. The intent is that the user can
@@ -41,7 +42,10 @@ export async function deleteUserAccount(userId: string): Promise<{
         .limit(1);
     const capturedEmail = emailRow?.email ?? null;
 
-    const paths = await listRecordingStoragePaths(userId);
+    const paths = [
+        ...(await listRecordingStoragePaths(userId)),
+        ...(await listImageStoragePaths(userId)),
+    ];
     const storage = createStorageProvider();
 
     let storageErrors = 0;

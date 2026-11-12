@@ -29,6 +29,7 @@ import {
     captureServerEvent,
     captureServerException,
 } from "@/lib/posthog-server";
+import { listRecordingIdsWithRetryableImages } from "@/lib/recordings/images";
 import { createUserStorageProvider } from "@/lib/storage/factory";
 import {
     claimAutoTranscribeIds,
@@ -36,6 +37,11 @@ import {
     noteAutoTranscribeOutcome,
     releaseAutoTranscribeIds,
 } from "@/lib/sync/auto-transcribe-state";
+import {
+    importRecordingPhotos,
+    needsPhotoImport,
+    type PhotoCandidate,
+} from "@/lib/sync/import-images";
 import {
     upsertEnhancement,
     upsertTranscription,
@@ -88,6 +94,8 @@ interface SyncContext {
     barkNotifications: boolean;
     notificationEmail: string | null;
     barkPushUrl: string | null;
+    /** Recordings that still hold a Plaud photo to (re)download (#331). */
+    retryableImageRecordingIds: Set<string>;
 }
 
 /** A freshly-synced recording that Plaud may hold transcript/summary content
@@ -97,6 +105,8 @@ interface ImportCandidate {
     plaudFileId: string;
     isTrans: boolean;
     isSummary: boolean;
+    /** Set when the recording's Plaud Highlight photos need importing (#331). */
+    photos?: PhotoCandidate;
 }
 
 async function storagePathHeldByOtherRecording(
@@ -172,9 +182,10 @@ async function resolveStorageKey(
 function buildImportCandidate(
     recordingId: string,
     plaudRecording: PlaudRecording,
+    photos?: PhotoCandidate,
 ): ImportCandidate | undefined {
     if (plaudRecording.is_trash) return undefined;
-    if (!plaudRecording.is_trans && !plaudRecording.is_summary) {
+    if (!plaudRecording.is_trans && !plaudRecording.is_summary && !photos) {
         return undefined;
     }
     return {
@@ -182,6 +193,35 @@ function buildImportCandidate(
         plaudFileId: plaudRecording.id,
         isTrans: plaudRecording.is_trans,
         isSummary: plaudRecording.is_summary,
+        ...(photos ? { photos } : {}),
+    };
+}
+
+function photoCandidateFor(
+    recordingId: string,
+    plaudRecording: PlaudRecording,
+    deviceSn: string,
+    imagesCheckedVersion: string | null,
+    context: SyncContext,
+    plaudClient: Awaited<ReturnType<typeof createPlaudClient>>,
+): PhotoCandidate | undefined {
+    const plaudVersion = plaudRecording.version_ms.toString();
+    const needed = needsPhotoImport({
+        importPlaudContent: context.importPlaudContent,
+        usingPlaudV4: plaudClient.usingPlaudV4,
+        isTrash: plaudRecording.is_trash,
+        deviceSn,
+        plaudVersion,
+        imagesCheckedVersion,
+        hasRetryableImages: context.retryableImageRecordingIds.has(recordingId),
+    });
+    if (!needed) return undefined;
+    return {
+        recordingId,
+        plaudFileId: plaudRecording.id,
+        startTimeMs: plaudRecording.start_time,
+        plaudVersion,
+        imagesCheckedVersion,
     };
 }
 
@@ -315,9 +355,18 @@ async function processRecording(
             existingRecording.plaudVersion === versionKey
         ) {
             if (context.importPlaudContent && !existingRecording.deletedAt) {
+                const photos = photoCandidateFor(
+                    existingRecording.id,
+                    plaudRecording,
+                    existingRecording.deviceSn,
+                    existingRecording.imagesCheckedVersion,
+                    context,
+                    plaudClient,
+                );
                 const importCandidate = buildImportCandidate(
                     existingRecording.id,
                     plaudRecording,
+                    photos,
                 );
                 if (importCandidate) {
                     const gaps = await loadPlaudContentGaps(
@@ -328,7 +377,7 @@ async function processRecording(
                             isSummary: importCandidate.isSummary,
                         },
                     );
-                    if (gaps.needsTranscript || gaps.needsSummary) {
+                    if (gaps.needsTranscript || gaps.needsSummary || photos) {
                         return {
                             status: "skipped",
                             recordingId: existingRecording.id,
@@ -468,6 +517,14 @@ async function processRecording(
                 importCandidate: buildImportCandidate(
                     existingRecording.id,
                     plaudRecording,
+                    photoCandidateFor(
+                        existingRecording.id,
+                        plaudRecording,
+                        plaudRecording.serial_number,
+                        existingRecording.imagesCheckedVersion,
+                        context,
+                        plaudClient,
+                    ),
                 ),
             };
         }
@@ -488,6 +545,14 @@ async function processRecording(
             importCandidate: buildImportCandidate(
                 newRecording.id,
                 plaudRecording,
+                photoCandidateFor(
+                    newRecording.id,
+                    plaudRecording,
+                    plaudRecording.serial_number,
+                    null,
+                    context,
+                    plaudClient,
+                ),
             ),
         };
     } catch (error) {
@@ -696,6 +761,17 @@ async function runSyncRecordingsForUser(userId: string): Promise<SyncResult> {
             notificationEmail:
                 settings?.notificationEmail || user?.email || null,
             barkPushUrl: settings?.barkPushUrl || null,
+            retryableImageRecordingIds: settings?.importPlaudContent
+                ? await listRecordingIdsWithRetryableImages(userId).catch(
+                      (error) => {
+                          console.error(
+                              "Failed to load photo retry state:",
+                              error,
+                          );
+                          return new Set<string>();
+                      },
+                  )
+                : new Set<string>(),
         };
 
         const plaudClient = await createPlaudClient(
@@ -876,6 +952,25 @@ async function runSyncRecordingsForUser(userId: string): Promise<SyncResult> {
                 plaudClient,
                 result,
             );
+        }
+
+        // Plaud Highlight photos (#331): after transcript/summary import,
+        // bounded per run; never throws out of sync.
+        const photoCandidates = context.importPlaudContent
+            ? importCandidates.flatMap((c) => (c.photos ? [c.photos] : []))
+            : [];
+        if (photoCandidates.length > 0) {
+            try {
+                await importRecordingPhotos(photoCandidates, {
+                    userId,
+                    plaudClient,
+                    storage,
+                    storageType: env.DEFAULT_STORAGE_TYPE,
+                    errors: result.errors,
+                });
+            } catch (error) {
+                result.errors.push(`Plaud photo import failed: ${error}`);
+            }
         }
 
         // Auto-transcribe with the user's own provider. 'plaud_only' skips

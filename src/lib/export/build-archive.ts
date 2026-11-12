@@ -4,6 +4,11 @@ import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import { aiEnhancements, recordings, transcriptions } from "@/db/schema";
 import { decryptJsonField, decryptText } from "@/lib/encryption/fields";
+import {
+    imageExportName,
+    imageExtensionOf,
+    listReadyImagesByRecording,
+} from "@/lib/recordings/images";
 import type { StorageProvider } from "@/lib/storage/types";
 
 export interface ArchiveResult {
@@ -22,6 +27,15 @@ interface ManifestRecording {
     audio: { included: boolean; path: string | null; reason?: string };
     transcript: { included: boolean; path: string | null };
     summary: { included: boolean; path: string | null };
+    /** Plaud Highlight photos (#331), in recording-time order. */
+    images: {
+        included: boolean;
+        path: string | null;
+        mimeType: string | null;
+        capturedAt: string | null;
+        offsetMs: number | null;
+        reason?: string;
+    }[];
 }
 
 function audioExtension(storagePath: string): string {
@@ -108,6 +122,13 @@ export async function buildAndUploadExportArchive(input: {
         ]),
     );
 
+    const imagesByRecording: Awaited<
+        ReturnType<typeof listReadyImagesByRecording>
+    > =
+        recordingIds.length > 0
+            ? await listReadyImagesByRecording(userId)
+            : new Map();
+
     const archive = new ZipArchive({ zlib: { level: 6 } });
     const passthrough = new PassThrough();
     // Count bytes as they flow through rather than re-reading the
@@ -182,6 +203,39 @@ export async function buildAndUploadExportArchive(input: {
     // rather than an optimistic guess made before the stream ran.
     const audioSettled: Promise<void>[] = [];
 
+    /**
+     * Append a storage stream through a PassThrough proxy, uncompressed.
+     * A mid-stream error ends just this entry (reported via `onInterrupted`)
+     * instead of failing the whole archive; settles once drained or ended.
+     */
+    const appendStoredStream = (
+        rawStream: Readable,
+        name: string,
+        onInterrupted: (err: unknown) => void,
+    ) => {
+        const proxy = new PassThrough();
+        const settled = new Promise<void>((resolve) => {
+            let done = false;
+            const finish = () => {
+                if (done) return;
+                done = true;
+                resolve();
+            };
+            rawStream.once("error", (err) => {
+                onInterrupted(err);
+                proxy.end();
+                finish();
+            });
+            proxy.once("error", finish);
+            proxy.once("close", finish);
+            proxy.once("end", finish);
+        });
+        audioSettled.push(settled);
+        activeAudioStreams.push({ rawStream, proxy });
+        rawStream.pipe(proxy);
+        archive.append(proxy, { name, store: true });
+    };
+
     for (const recording of userRecordings) {
         // Per-recording DB/metadata work has no byte-stream progress of
         // its own to trigger the passthrough listener above -- mark
@@ -201,6 +255,7 @@ export async function buildAndUploadExportArchive(input: {
             audio: { included: false, path: null },
             transcript: { included: false, path: null },
             summary: { included: false, path: null },
+            images: [],
         };
 
         const audioExists = await storage
@@ -213,50 +268,14 @@ export async function buildAndUploadExportArchive(input: {
                 );
                 const audioPath = `${folder}/audio.${audioExtension(recording.storagePath)}`;
 
-                // Proxy the raw storage stream through our own PassThrough
-                // instead of appending it to the archive directly. A
-                // mid-stream error on the raw stream (network drop,
-                // storage hiccup) would otherwise surface as an archiver
-                // `error` event and abort the *entire* archive -- the
-                // try/catch above only covers stream *creation*, not
-                // errors emitted while archiver is draining it. Ending
-                // the proxy gracefully on such an error instead leaves
-                // this one entry truncated (or empty) while every other
-                // recording still makes it into the archive.
-                const proxy = new PassThrough();
-                const settled = new Promise<void>((resolve) => {
-                    let done = false;
-                    const finish = () => {
-                        if (done) return;
-                        done = true;
-                        resolve();
+                // Audio is already compressed, so it is stored, not deflated.
+                appendStoredStream(rawStream, audioPath, (err) => {
+                    entry.audio = {
+                        included: false,
+                        path: null,
+                        reason: `Audio stream interrupted: ${err instanceof Error ? err.message : String(err)}`,
                     };
-                    rawStream.once("error", (err) => {
-                        entry.audio = {
-                            included: false,
-                            path: null,
-                            reason: `Audio stream interrupted: ${err instanceof Error ? err.message : String(err)}`,
-                        };
-                        // Gracefully end the proxy instead of letting the
-                        // error propagate into archiver -- archiver treats
-                        // a source-stream error as fatal to the whole
-                        // archive. Ending early just truncates this one
-                        // entry.
-                        proxy.end();
-                        finish();
-                    });
-                    proxy.once("error", finish);
-                    proxy.once("close", finish);
-                    proxy.once("end", finish);
                 });
-                audioSettled.push(settled);
-                activeAudioStreams.push({ rawStream, proxy });
-                rawStream.pipe(proxy);
-
-                // Audio is already compressed (mp3/opus/etc.) -- deflating
-                // it again wastes CPU for near-zero size benefit. `store:
-                // true` writes it uncompressed into the zip.
-                archive.append(proxy, { name: audioPath, store: true });
                 entry.audio = { included: true, path: audioPath };
             } catch (error) {
                 entry.audio = {
@@ -304,6 +323,39 @@ export async function buildAndUploadExportArchive(input: {
                 { name: summaryPath },
             );
             entry.summary = { included: true, path: summaryPath };
+        }
+
+        const photos = imagesByRecording.get(recording.id) ?? [];
+        for (const [index, photo] of photos.entries()) {
+            const ext = imageExtensionOf(photo.storagePath);
+            const photoEntry: ManifestRecording["images"][number] = {
+                included: false,
+                path: null,
+                mimeType: photo.mimeType,
+                capturedAt: photo.capturedAt?.toISOString() ?? null,
+                offsetMs: photo.offsetMs,
+            };
+            entry.images.push(photoEntry);
+            if (!photo.storagePath || !ext) {
+                photoEntry.reason = "Photo file not found in storage";
+                continue;
+            }
+            const photoPath = `${folder}/images/${imageExportName(index, photos.length, photo.offsetMs, ext)}`;
+            try {
+                const rawStream = await storage.downloadStream(
+                    photo.storagePath,
+                );
+                appendStoredStream(rawStream, photoPath, (err) => {
+                    photoEntry.included = false;
+                    photoEntry.path = null;
+                    photoEntry.reason = `Photo stream interrupted: ${err instanceof Error ? err.message : String(err)}`;
+                });
+                photoEntry.included = true;
+                photoEntry.path = photoPath;
+            } catch (error) {
+                photoEntry.reason =
+                    error instanceof Error ? error.message : String(error);
+            }
         }
 
         manifest.recordings.push(entry);

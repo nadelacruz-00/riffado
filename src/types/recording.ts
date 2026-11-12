@@ -21,6 +21,8 @@ export type Recording = Omit<RecordingQueryResult, "startTime"> & {
      * when never decoded; an empty array would be invalid (treat as null).
      */
     waveformPeaks?: number[] | null;
+    /** Plaud Highlight photo rows (any status); 0 or absent hides the Photos card (#331). */
+    imageCount?: number;
 };
 
 // Helper to serialize a recording query result. Optional fields let
@@ -31,6 +33,7 @@ export function serializeRecording(
         hasTranscript?: boolean;
         hasSummary?: boolean;
         waveformPeaks?: number[] | null;
+        imageCount?: number;
     },
 ): Recording {
     return {
@@ -45,5 +48,6 @@ export function serializeRecording(
         waveformPeaks: flags?.waveformPeaks?.length
             ? flags.waveformPeaks
             : null,
+        imageCount: flags?.imageCount ?? 0,
     };
 }

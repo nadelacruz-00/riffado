@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- Plaud Highlight photos sync with each recording on Plaud 4.0 accounts when "Import Plaud transcripts, summaries and photos" is on. They appear in a Photos card on the recording page (time badges jump the player to the moment the photo was taken), in the export zip under `images/` with manifest entries, and in the Automation API (`images` on `GET /api/v1/recordings/{id}`, new `GET /api/v1/recordings/{id}/images/{imageId}`). Photo bytes count toward the hosted storage limit. Plaud's AI summary-card images are not imported. Limits: at most 25 recordings and 200 MB / 5 minutes of photo downloads per sync, so a large library fills in over several syncs; a photo the phone uploads after Riffado first synced the recording is picked up on the next Plaud-side edit of that recording ([#331](https://github.com/riffado/riffado/issues/331)).
 - Custom summary prompts are now reachable from Settings → Summary: create, edit, view, and delete custom prompts, and select one as the default alongside the built-in presets. The per-recording summary dropdown also lists custom prompts and now initializes to the saved default instead of always defaulting to "General Summary" ([#199](https://github.com/riffado/riffado/issues/199)).
 - Download the original audio file from the recording player and the recording row menu (`GET /api/recordings/[id]/audio?download=1`) ([#229](https://github.com/riffado/riffado/issues/229)).
 - Inline rename for recording titles. Click the title in the player (or the recording page heading), edit, and press Enter. Persists via `PATCH /api/recordings/[id]` ([#217](https://github.com/riffado/riffado/issues/217)).
@@ -11,6 +12,7 @@
 - Changing the default summary prompt in Settings → Summary wiped any custom summary prompts on every save, since the request always sent `customPrompts: []` instead of the current list ([#199](https://github.com/riffado/riffado/issues/199)).
 
 ### Changed
+- Migration `0039_tough_ulik` adds the `recording_images` table and the nullable `recordings.images_checked_version` column for Plaud photo sync ([#331](https://github.com/riffado/riffado/issues/331)). Additive only.
 - Migration `0036_wide_raider` upgrades `stripe_webhook_events` to a durable Stripe event inbox. Inert on self-host unless hosted billing is configured.
 - Removes optional `RYBBIT_SITE_ID` / `RYBBIT_HOST` and the `/api/int/*` analytics proxy. Adds optional `.env.example` vars `OA_TRACKING_KEY` / `OA_HOST` for hosted-only cookieless Open Analytics. Inert unless `IS_HOSTED=true`.
 

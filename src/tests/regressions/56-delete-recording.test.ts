@@ -83,6 +83,14 @@ vi.mock("@/lib/storage/factory", () => ({
     }),
 }));
 
+// Photo rows (#331) are covered by src/tests/recordings/photo-delete.test.ts.
+vi.mock("@/lib/recordings/images", async (orig) => ({
+    ...(await orig<typeof import("@/lib/recordings/images")>()),
+    listImageStoragePathsForRecording: vi.fn().mockResolvedValue([]),
+    deleteImagesForRecording: vi.fn().mockResolvedValue([]),
+    listRecordingIdsWithRetryableImages: vi.fn().mockResolvedValue(new Set()),
+}));
+
 vi.mock("@/lib/notifications/bark", () => ({
     sendNewRecordingBarkNotification: vi.fn().mockResolvedValue(true),
 }));

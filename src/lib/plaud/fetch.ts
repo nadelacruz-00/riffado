@@ -84,6 +84,63 @@ export async function plaudFetch(
     }
 }
 
+/** Why `fetchUrlWithLimit` gave up: the body passed the cap, or a non-2xx status. */
+export class RemoteDownloadError extends Error {
+    constructor(
+        readonly reason: "too_large" | "http_error",
+        readonly status?: number,
+    ) {
+        super(
+            reason === "too_large"
+                ? "Download exceeds the size limit"
+                : `Download failed with HTTP ${status}`,
+        );
+        this.name = "RemoteDownloadError";
+    }
+}
+
+/**
+ * Download a URL through `plaudFetch` with a byte cap. Rejects before reading
+ * the body when `Content-Length` is above the cap, and aborts the request
+ * once the streamed byte count passes it (missing or false `Content-Length`).
+ */
+export async function fetchUrlWithLimit(
+    url: string,
+    maxBytes: number,
+): Promise<{ buffer: Buffer; contentType: string | null }> {
+    const controller = new AbortController();
+    const response = await plaudFetch(url, { signal: controller.signal });
+    if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new RemoteDownloadError("http_error", response.status);
+    }
+
+    const declared = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > maxBytes) {
+        controller.abort();
+        throw new RemoteDownloadError("too_large");
+    }
+
+    const contentType = response.headers.get("content-type");
+    const reader = response.body?.getReader();
+    if (!reader) return { buffer: Buffer.alloc(0), contentType };
+
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > maxBytes) {
+            await reader.cancel().catch(() => undefined);
+            controller.abort();
+            throw new RemoteDownloadError("too_large");
+        }
+        chunks.push(value);
+    }
+    return { buffer: Buffer.concat(chunks, total), contentType };
+}
+
 /**
  * Layer browser-shaped headers under the caller's headers in insertion order.
  * Caller-provided headers always win.
