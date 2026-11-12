@@ -69,6 +69,15 @@ export interface PlaudV4FileObject {
     mime_type?: string;
     object_size?: number;
     task_status?: number | null; // 1 = ready
+    relation_content_ids?: string[]; // content ids this object links to (e.g. Highlight photos)
+}
+
+/** One entry of a `MARK_MEMO` object body (a Highlight); photos carry `picture_link`. */
+export interface PlaudV4MarkMemoEntry {
+    mark_type?: number;
+    picture_link?: string; // content id, key into relation_content_mapping
+    timestamp?: number; // ms from the recording start
+    picture_local_path?: string;
 }
 
 export interface PlaudV4FileMeta {
@@ -113,6 +122,7 @@ export interface PlaudV4FileDetailResponse {
         node?: PlaudV4Node;
         meta?: PlaudV4FileMeta;
         objects?: PlaudV4FileObject[];
+        relation_content_mapping?: Record<string, string>; // content id -> presigned URL
     };
 }
 

@@ -19,12 +19,15 @@ import { safeParseJson } from "./parse";
 import { DEFAULT_SERVER_KEY, PLAUD_SERVERS, PLAUD_USER_AGENT } from "./servers";
 import {
     applyPlaudV4Detail,
+    findMarkMemoObject,
     isPlaudV4MigratedResponse,
     mapPlaudV4Item,
-    pickAudioObject,
     PLAUD_V4_VERSION_CONFLICT_STATUS,
+    type PlaudHighlightImage,
+    pickAudioObject,
     plaudV4DetailToLegacy,
     recordingIdToPlaudV4FileId,
+    selectHighlightImages,
     sortPlaudRecordings,
 } from "./v4";
 import { resolveWorkspaceToken } from "./workspace";
@@ -543,6 +546,42 @@ export class PlaudClient {
         } catch {
             return text;
         }
+    }
+
+    /**
+     * Highlight photos of a Plaud 4.0 recording, from a freshly fetched v4
+     * detail so the presigned URLs are seconds old. Ids the detail's mapping
+     * does not cover are resolved through the content-URL endpoint; an id
+     * still without a URL comes back with `url: null`. Returns an empty list
+     * for legacy (pre-4.0) accounts and for recordings without Highlights.
+     */
+    async listRecordingImages(
+        recordingId: string,
+    ): Promise<PlaudHighlightImage[]> {
+        if (!this.v4Mode) return [];
+        const detail = await this.getFileDetailV4(recordingId, { fresh: true });
+        const memoObject = findMarkMemoObject(detail);
+        if (!memoObject) return [];
+
+        let memoUrl = memoObject.content_url ?? undefined;
+        if (!memoUrl && memoObject.content_id) {
+            const urls = await this.resolveContentUrlsV4([
+                memoObject.content_id,
+            ]);
+            memoUrl = urls[memoObject.content_id];
+        }
+        if (!memoUrl) return [];
+
+        const images = selectHighlightImages(
+            detail,
+            await this.fetchContentLink(memoUrl),
+        );
+        const missing = images.filter((i) => !i.url).map((i) => i.plaudImageId);
+        if (missing.length === 0) return images;
+        const urls = await this.resolveContentUrlsV4(missing);
+        return images.map((i) =>
+            i.url ? i : { ...i, url: urls[i.plaudImageId] ?? null },
+        );
     }
 
     async testConnection(): Promise<boolean> {
