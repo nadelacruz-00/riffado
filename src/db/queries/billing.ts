@@ -8,6 +8,7 @@ import {
     subscriptions,
     users,
 } from "@/db/schema";
+import { getUserImageBytes } from "@/lib/recordings/images";
 
 /**
  * Coerce a timestamp column read through `db.execute`.
@@ -963,7 +964,11 @@ export async function refundMynahSeconds(input: {
         .where(eq(users.id, input.userId));
 }
 
-/** Sum of `recordings.filesize` for live (non-tombstoned) rows. Returns 0 when the user has no recordings. */
+/**
+ * Stored bytes of a user: `recordings.filesize` of live (non-tombstoned)
+ * rows plus their ready Plaud photos (#331). Returns 0 when the user has
+ * neither.
+ */
 export async function getUserStorageBytes(userId: string): Promise<number> {
     const rows = await db
         .select({ total: sum(recordings.filesize) })
@@ -975,10 +980,14 @@ export async function getUserStorageBytes(userId: string): Promise<number> {
             ),
         );
     const total = rows[0]?.total;
-    if (total === null || total === undefined) return 0;
     const parsed =
-        typeof total === "string" ? Number.parseInt(total, 10) : Number(total);
-    return Number.isFinite(parsed) ? parsed : 0;
+        total === null || total === undefined
+            ? 0
+            : typeof total === "string"
+              ? Number.parseInt(total, 10)
+              : Number(total);
+    const audioBytes = Number.isFinite(parsed) ? parsed : 0;
+    return audioBytes + (await getUserImageBytes(userId));
 }
 
 /**

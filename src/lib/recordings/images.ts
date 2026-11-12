@@ -415,3 +415,45 @@ export async function listImageStoragePathsForRecording(
         );
     return rows.flatMap((r) => (r.storagePath ? [r.storagePath] : []));
 }
+
+/**
+ * SQL subquery `(user_id, bytes)`: bytes of ready photos on live
+ * (non-tombstoned) recordings, per user. Every storage total that counts
+ * audio bytes adds this, so enforcement and admin totals stay equal.
+ */
+export function liveImageBytesByUser(): SQL {
+    return sql`(
+    select ri.user_id, sum(ri.size_bytes)::bigint as bytes
+    from ${recordingImages} ri
+    join ${recordings} rr on rr.id = ri.recording_id
+    where ri.status = 'ready' and rr.deleted_at is null
+    group by ri.user_id
+)`;
+}
+
+/** Query for one user's ready photo bytes on live recordings. */
+export function userImageBytesQuery(exec: Executor, userId: string) {
+    return exec
+        .select({
+            total: sql<string | null>`sum(${recordingImages.sizeBytes})`,
+        })
+        .from(recordingImages)
+        .innerJoin(recordings, eq(recordings.id, recordingImages.recordingId))
+        .where(
+            and(
+                eq(recordingImages.userId, userId),
+                eq(recordingImages.status, "ready"),
+                isNull(recordings.deletedAt),
+            ),
+        );
+}
+
+/** One user's ready photo bytes on live recordings; 0 when none. */
+export async function getUserImageBytes(
+    userId: string,
+    exec: Executor = db,
+): Promise<number> {
+    const [row] = await userImageBytesQuery(exec, userId);
+    const parsed = Number(row?.total ?? 0);
+    return Number.isFinite(parsed) ? parsed : 0;
+}

@@ -13,8 +13,10 @@ const {
     imageStorageKey,
     listImageStoragePaths,
     readyImagesQuery,
+    liveImageBytesByUser,
     retryableImageCondition,
     sniffImage,
+    userImageBytesQuery,
 } = await import("@/lib/recordings/images");
 
 const mockDb = drizzle.mock({ schema }) as unknown as Parameters<
@@ -184,5 +186,29 @@ describe("retryableImageCondition", () => {
             sql: '("recording_images"."status" = $1 or ("recording_images"."status" = $2 and "recording_images"."attempts" < $3 and ("recording_images"."last_error" is null or "recording_images"."last_error" <> $4)))',
             params: ["pending", "failed", 5, "unsupported_type"],
         });
+    });
+});
+
+describe("photo storage bytes", () => {
+    it("per-user fragment counts only ready photos on live recordings", () => {
+        const { sql } = render(liveImageBytesByUser());
+        expect(sql).toContain("sum(ri.size_bytes)::bigint as bytes");
+        expect(sql).toContain('from "recording_images" ri');
+        expect(sql).toContain(
+            'join "recordings" rr on rr.id = ri.recording_id',
+        );
+        expect(sql).toContain(
+            "where ri.status = 'ready' and rr.deleted_at is null",
+        );
+        expect(sql).toContain("group by ri.user_id");
+    });
+
+    it("single-user query filters by owner, ready status and live recording", () => {
+        const { sql, params } = userImageBytesQuery(mockDb, "user_1").toSQL();
+        expect(sql).toContain('sum("recording_images"."size_bytes")');
+        expect(sql).toContain('"recording_images"."user_id" = $1');
+        expect(sql).toContain('"recording_images"."status" = $2');
+        expect(sql).toContain('"recordings"."deleted_at" is null');
+        expect(params).toEqual(["user_1", "ready"]);
     });
 });

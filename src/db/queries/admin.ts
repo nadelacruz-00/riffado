@@ -17,10 +17,15 @@ import {
     aiEnhancements,
     apiCredentials,
     plaudConnections,
+    recordingImages,
     recordings,
     transcriptions,
     users,
 } from "@/db/schema";
+import {
+    getUserImageBytes,
+    liveImageBytesByUser,
+} from "@/lib/recordings/images";
 
 // MUST NOT select: recordings.filename, transcriptions.text,
 // aiEnhancements.summary/actionItems/keyPoints, plaudConnections.bearerToken,
@@ -66,6 +71,10 @@ export async function fleetOverview() {
         missingTxAll,
         missingTx7,
         missingTxPrior7,
+        photoBytes,
+        photoBytesByTypeRows,
+        photoBytesLast7,
+        photoBytesPrior7,
     ] = await Promise.all([
         db
             .select({ n: count() })
@@ -317,7 +326,41 @@ export async function fleetOverview() {
                 ),
             )
             .then((rows) => rows[0]),
+        livePhotoBytes().then((rows) => rows[0]),
+        db
+            .select({
+                type: recordingImages.storageType,
+                b: sum(recordingImages.sizeBytes),
+            })
+            .from(recordingImages)
+            .innerJoin(
+                recordings,
+                eq(recordings.id, recordingImages.recordingId),
+            )
+            .where(
+                and(
+                    eq(recordingImages.status, "ready"),
+                    isNull(recordings.deletedAt),
+                ),
+            )
+            .groupBy(recordingImages.storageType),
+        livePhotoBytes(gte(recordingImages.createdAt, d7)).then(
+            (rows) => rows[0],
+        ),
+        livePhotoBytes(
+            and(
+                gte(recordingImages.createdAt, d14),
+                lt(recordingImages.createdAt, d7),
+            ),
+        ).then((rows) => rows[0]),
     ]);
+
+    const storageByType: Record<string, number> = Object.fromEntries(
+        storageByTypeRows.map((r) => [r.type, Number(r.b ?? 0)]),
+    );
+    for (const r of photoBytesByTypeRows) {
+        storageByType[r.type] = (storageByType[r.type] ?? 0) + Number(r.b ?? 0);
+    }
 
     return {
         userTotal: userTotal?.n ?? 0,
@@ -330,9 +373,11 @@ export async function fleetOverview() {
         plaudConnectionsLast7: plaudConn7?.n ?? 0,
         plaudConnectionsPrior7: plaudConnPrior7?.n ?? 0,
         recordingTotal: recordingTotal?.n ?? 0,
-        storageBytes: Number(storageBytes?.b ?? 0),
-        bytesLast7: Number(bytesLast7?.b ?? 0),
-        bytesPrior7: Number(bytesPrior7?.b ?? 0),
+        storageBytes: Number(storageBytes?.b ?? 0) + Number(photoBytes?.b ?? 0),
+        bytesLast7:
+            Number(bytesLast7?.b ?? 0) + Number(photoBytesLast7?.b ?? 0),
+        bytesPrior7:
+            Number(bytesPrior7?.b ?? 0) + Number(photoBytesPrior7?.b ?? 0),
         recordingsLast7: recordingsLast7?.n ?? 0,
         recordingsPrior7: recordingsPrior7?.n ?? 0,
         transcriptionByType: Object.fromEntries(
@@ -348,9 +393,7 @@ export async function fleetOverview() {
         enhancementsPrior7: enhancementsPrior7?.n ?? 0,
         suspensionsLast7: suspensions7?.n ?? 0,
         suspensionsPrior7: suspensionsPrior7?.n ?? 0,
-        storageByType: Object.fromEntries(
-            storageByTypeRows.map((r) => [r.type, Number(r.b ?? 0)]),
-        ) as Record<string, number>,
+        storageByType,
         recordingsWithoutTranscriptionTotal: missingTxAll?.n ?? 0,
         recordingsWithoutTranscriptionLast7: missingTx7?.n ?? 0,
         recordingsWithoutTranscriptionPrior7: missingTxPrior7?.n ?? 0,
@@ -358,6 +401,20 @@ export async function fleetOverview() {
 }
 
 export type FleetOverview = Awaited<ReturnType<typeof fleetOverview>>;
+
+function livePhotoBytes(extra?: ReturnType<typeof and>) {
+    return db
+        .select({ b: sum(recordingImages.sizeBytes) })
+        .from(recordingImages)
+        .innerJoin(recordings, eq(recordings.id, recordingImages.recordingId))
+        .where(
+            and(
+                eq(recordingImages.status, "ready"),
+                isNull(recordings.deletedAt),
+                extra,
+            ),
+        );
+}
 
 export async function signupsByDay(days = 90) {
     const since = new Date(Date.now() - days * DAY_MS).toISOString();
@@ -450,7 +507,7 @@ export async function listUsers(opts: {
             (pc.id is not null) as plaud_connected,
             pc.api_base as plaud_region,
             coalesce(r.recording_count, 0)::int as recording_count,
-            coalesce(r.storage_bytes, 0)::bigint as storage_bytes,
+            (coalesce(r.storage_bytes, 0) + coalesce(ib.bytes, 0))::bigint as storage_bytes,
             coalesce(t.n, 0)::int as server_tx_30d
         from users u
         left join plaud_connections pc on pc.user_id = u.id
@@ -462,6 +519,7 @@ export async function listUsers(opts: {
             where deleted_at is null
             group by user_id
         ) r on r.user_id = u.id
+        left join ${liveImageBytesByUser()} ib on ib.user_id = u.id
         left join (
             select user_id, count(*)::int as n
             from transcriptions
@@ -551,60 +609,62 @@ export async function getUserDetail(
         .limit(1);
     if (!u) return null;
 
-    const [pc, recAgg, txByType, enhAgg, credAgg, recent] = await Promise.all([
-        db
-            .select({
-                id: plaudConnections.id,
-                apiBase: plaudConnections.apiBase,
-                plaudEmail: plaudConnections.plaudEmail,
-                lastSync: plaudConnections.lastSync,
-            })
-            .from(plaudConnections)
-            .where(eq(plaudConnections.userId, userId))
-            .orderBy(desc(plaudConnections.updatedAt))
-            .limit(1)
-            .then((rows) => rows[0]),
-        db
-            .select({ n: count(), b: sum(recordings.filesize) })
-            .from(recordings)
-            .where(
-                and(
-                    eq(recordings.userId, userId),
-                    isNull(recordings.deletedAt),
-                ),
-            )
-            .then((rows) => rows[0]),
-        db
-            .select({ type: transcriptions.transcriptionType, n: count() })
-            .from(transcriptions)
-            .where(eq(transcriptions.userId, userId))
-            .groupBy(transcriptions.transcriptionType),
-        db
-            .select({ n: count() })
-            .from(aiEnhancements)
-            .where(eq(aiEnhancements.userId, userId))
-            .then((rows) => rows[0]),
-        db
-            .select({ n: count() })
-            .from(apiCredentials)
-            .where(eq(apiCredentials.userId, userId))
-            .then((rows) => rows[0]),
-        db
-            .select({
-                id: recordings.id,
-                createdAt: recordings.createdAt,
-                startTime: recordings.startTime,
-                durationMs: recordings.duration,
-                filesize: recordings.filesize,
-                deviceSn: recordings.deviceSn,
-                storageType: recordings.storageType,
-                deletedAt: recordings.deletedAt,
-            })
-            .from(recordings)
-            .where(eq(recordings.userId, userId))
-            .orderBy(desc(recordings.startTime))
-            .limit(50),
-    ]);
+    const [pc, recAgg, txByType, enhAgg, credAgg, recent, imageBytes] =
+        await Promise.all([
+            db
+                .select({
+                    id: plaudConnections.id,
+                    apiBase: plaudConnections.apiBase,
+                    plaudEmail: plaudConnections.plaudEmail,
+                    lastSync: plaudConnections.lastSync,
+                })
+                .from(plaudConnections)
+                .where(eq(plaudConnections.userId, userId))
+                .orderBy(desc(plaudConnections.updatedAt))
+                .limit(1)
+                .then((rows) => rows[0]),
+            db
+                .select({ n: count(), b: sum(recordings.filesize) })
+                .from(recordings)
+                .where(
+                    and(
+                        eq(recordings.userId, userId),
+                        isNull(recordings.deletedAt),
+                    ),
+                )
+                .then((rows) => rows[0]),
+            db
+                .select({ type: transcriptions.transcriptionType, n: count() })
+                .from(transcriptions)
+                .where(eq(transcriptions.userId, userId))
+                .groupBy(transcriptions.transcriptionType),
+            db
+                .select({ n: count() })
+                .from(aiEnhancements)
+                .where(eq(aiEnhancements.userId, userId))
+                .then((rows) => rows[0]),
+            db
+                .select({ n: count() })
+                .from(apiCredentials)
+                .where(eq(apiCredentials.userId, userId))
+                .then((rows) => rows[0]),
+            db
+                .select({
+                    id: recordings.id,
+                    createdAt: recordings.createdAt,
+                    startTime: recordings.startTime,
+                    durationMs: recordings.duration,
+                    filesize: recordings.filesize,
+                    deviceSn: recordings.deviceSn,
+                    storageType: recordings.storageType,
+                    deletedAt: recordings.deletedAt,
+                })
+                .from(recordings)
+                .where(eq(recordings.userId, userId))
+                .orderBy(desc(recordings.startTime))
+                .limit(50),
+            getUserImageBytes(userId),
+        ]);
     const txTotalServer = txByType.find((r) => r.type === "server")?.n ?? 0;
     const txTotalBrowser = txByType.find((r) => r.type === "browser")?.n ?? 0;
     const txTotal = txByType.reduce((acc, r) => acc + r.n, 0);
@@ -624,7 +684,7 @@ export async function getUserDetail(
         },
         metrics: {
             recordingCount: recAgg?.n ?? 0,
-            storageBytes: Number(recAgg?.b ?? 0),
+            storageBytes: Number(recAgg?.b ?? 0) + imageBytes,
             transcriptionCount: txTotal,
             serverTranscriptionCount: txTotalServer,
             browserTranscriptionCount: txTotalBrowser,
@@ -643,9 +703,11 @@ export async function storageHistogram() {
     }>(sql`
         with per_user as (
             select u.id as user_id,
-                   coalesce(sum(r.filesize) filter (where r.deleted_at is null), 0)::bigint as bytes
+                   (coalesce(sum(r.filesize) filter (where r.deleted_at is null), 0)
+                    + coalesce(max(ib.bytes), 0))::bigint as bytes
             from users u
             left join recordings r on r.user_id = u.id
+            left join ${liveImageBytesByUser()} ib on ib.user_id = u.id
             group by u.id
         )
         select bucket, count(*)::int as n
@@ -678,9 +740,10 @@ export async function topStorageUsers(limit = 50) {
     }>(sql`
         select u.id as user_id, u.email,
                count(r.id)::int as recording_count,
-               coalesce(sum(r.filesize), 0)::bigint as bytes
+               (coalesce(sum(r.filesize), 0) + coalesce(max(ib.bytes), 0))::bigint as bytes
         from users u
         left join recordings r on r.user_id = u.id and r.deleted_at is null
+        left join ${liveImageBytesByUser()} ib on ib.user_id = u.id
         group by u.id, u.email
         order by bytes desc nulls last
         limit ${limit}
@@ -748,9 +811,11 @@ export async function pricingSnapshot() {
     const since30 = new Date(Date.now() - 30 * DAY_MS).toISOString();
     const [storage, recordingCounts, serverTx] = await Promise.all([
         db.execute<{ bytes: number }>(sql`
-            select coalesce(sum(r.filesize) filter (where r.deleted_at is null), 0)::bigint as bytes
+            select (coalesce(sum(r.filesize) filter (where r.deleted_at is null), 0)
+                    + coalesce(max(ib.bytes), 0))::bigint as bytes
             from users u
             left join recordings r on r.user_id = u.id
+            left join ${liveImageBytesByUser()} ib on ib.user_id = u.id
             group by u.id
             order by bytes asc
         `),
