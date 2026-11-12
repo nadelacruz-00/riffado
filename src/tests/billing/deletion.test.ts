@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { dbMock, emailMock, envMock, queriesMock, storageMock } = vi.hoisted(
-    () => ({
+const { dbMock, emailMock, envMock, imagesMock, queriesMock, storageMock } =
+    vi.hoisted(() => ({
         dbMock: { select: vi.fn() },
         emailMock: { sendAccountDeletedEmail: vi.fn() },
         envMock: { APP_URL: "https://app.example.com" },
@@ -13,8 +13,10 @@ const { dbMock, emailMock, envMock, queriesMock, storageMock } = vi.hoisted(
         storageMock: {
             deleteFile: vi.fn(),
         },
-    }),
-);
+        imagesMock: {
+            listImageStoragePaths: vi.fn().mockResolvedValue([]),
+        },
+    }));
 
 vi.mock("@/db", () => ({ db: dbMock }));
 vi.mock("@/db/schema", () => ({ users: { id: "id", email: "email" } }));
@@ -24,6 +26,7 @@ vi.mock("@/lib/notifications/email", () => emailMock);
 vi.mock("@/lib/storage/factory", () => ({
     createStorageProvider: () => storageMock,
 }));
+vi.mock("@/lib/recordings/images", () => imagesMock);
 
 function stubEmailLookup(email: string | null) {
     dbMock.select.mockReturnValue({
@@ -88,6 +91,24 @@ describe("deleteUserAccount", () => {
 
         expect(result.storageErrors).toBe(1);
         expect(queriesMock.deleteUser).toHaveBeenCalledWith("u1");
+    });
+
+    it("also deletes the user's stored photo files (#331)", async () => {
+        stubEmailLookup("u1@example.com");
+        queriesMock.listRecordingStoragePaths.mockResolvedValue(["u1/a.opus"]);
+        imagesMock.listImageStoragePaths.mockResolvedValueOnce([
+            "u1/images/rec1/c_a.jpg",
+        ]);
+        storageMock.deleteFile.mockResolvedValue(undefined);
+        queriesMock.deleteUser.mockResolvedValue(undefined);
+
+        await deleteUserAccount("u1");
+
+        expect(storageMock.deleteFile.mock.calls.map((c) => c[0])).toEqual([
+            "u1/a.opus",
+            "u1/images/rec1/c_a.jpg",
+        ]);
+        expect(imagesMock.listImageStoragePaths).toHaveBeenCalledWith("u1");
     });
 
     it("deletes the user row even when there are zero stored objects", async () => {

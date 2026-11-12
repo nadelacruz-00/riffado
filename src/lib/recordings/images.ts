@@ -397,3 +397,21 @@ export async function markImageReady(
         return true;
     });
 }
+
+/** Stored photo paths of one recording, for deleting its files. */
+export async function listImageStoragePathsForRecording(
+    userId: string,
+    recordingId: string,
+    exec: Executor = db,
+): Promise<string[]> {
+    const rows = await exec
+        .select({ storagePath: recordingImages.storagePath })
+        .from(recordingImages)
+        .where(
+            and(
+                eq(recordingImages.userId, userId),
+                eq(recordingImages.recordingId, recordingId),
+            ),
+        );
+    return rows.flatMap((r) => (r.storagePath ? [r.storagePath] : []));
+}
