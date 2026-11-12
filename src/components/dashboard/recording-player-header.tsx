@@ -55,7 +55,12 @@ export function RecordingPlayerHeader({
             <CardAction>
                 <DownloadAudioButton recordingId={recording.id} />
             </CardAction>
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+            {/*
+              No "·" separators: when the line wrapped on a phone, a
+              separator started the second line. Column gap alone
+              keeps the parts apart on every width.
+            */}
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                 <span>
                     Recorded{" "}
                     <LocalTimeRange
@@ -64,19 +69,11 @@ export function RecordingPlayerHeader({
                     />
                 </span>
                 {metaParts.map((part) => (
-                    <span key={part} className="inline-flex items-center gap-2">
-                        <span aria-hidden="true" className="opacity-40">
-                            ·
-                        </span>
-                        <span>{part}</span>
-                    </span>
+                    <span key={part}>{part}</span>
                 ))}
                 {scrubberStyle === "waveform" &&
                     waveformStatus === "decoding" && (
                         <span className="inline-flex items-center gap-1">
-                            <span aria-hidden="true" className="opacity-40">
-                                ·
-                            </span>
                             <Loader2 className="size-3 animate-spin" />
                             Analyzing audio…
                         </span>
@@ -89,9 +86,6 @@ export function RecordingPlayerHeader({
                             className="inline-flex items-center gap-1 underline-offset-2 hover:text-foreground hover:underline"
                             title="Decode waveform in your browser (may take a few seconds)"
                         >
-                            <span aria-hidden="true" className="opacity-40">
-                                ·
-                            </span>
                             <AudioWaveform className="size-3" />
                             Generate waveform
                         </button>
@@ -102,9 +96,6 @@ export function RecordingPlayerHeader({
                         onClick={onDecodeWaveform}
                         className="inline-flex items-center gap-1 text-destructive underline-offset-2 hover:underline"
                     >
-                        <span aria-hidden="true" className="opacity-40">
-                            ·
-                        </span>
                         <AudioWaveform className="size-3" />
                         Retry waveform
                     </button>
