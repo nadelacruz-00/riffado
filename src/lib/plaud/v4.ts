@@ -148,28 +148,29 @@ function readyObject(
     );
 }
 
+const AUDIO_TYPES = ["AUDIO_TRANSCODED", "AUDIO"] as const;
+
 /**
- * Audio object to download. Plaud keeps the recorder's raw upload as `AUDIO`
- * (encrypted for 4.0 accounts, so not a playable container) and the
- * player-ready MP3 as `AUDIO_TRANSCODED`. Prefer the transcoded copy, and
- * fall back to `AUDIO` for recordings that only carry it (already Ogg/Opus).
+ * Audio object of a v4 file detail. Plaud can expose two copies: `AUDIO`, the
+ * recorder's raw upload (not a playable container on some 4.0 accounts), and
+ * `AUDIO_TRANSCODED`, the MP3 the Plaud player streams. Prefer the transcoded
+ * copy and fall back to `AUDIO`, which older files carry alone (Ogg/Opus).
+ * A downloadable object (URL or content id) wins over one without, so the
+ * size read and the download use the same object.
  */
 export function pickAudioObject(
     detail: PlaudV4FileDetail | undefined,
 ): PlaudV4FileObject | undefined {
     const objects = detail?.objects ?? [];
-    return (
-        objects.find(
-            (o) =>
-                o.object_type === "AUDIO_TRANSCODED" &&
-                Boolean(o.content_url || o.content_id),
-        ) ??
-        objects.find(
-            (o) =>
-                o.object_type === "AUDIO" &&
-                Boolean(o.content_url || o.content_id),
-        )
-    );
+    const byType = (downloadable: boolean) =>
+        AUDIO_TYPES.map((type) =>
+            objects.find(
+                (o) =>
+                    o.object_type === type &&
+                    (!downloadable || Boolean(o.content_url || o.content_id)),
+            ),
+        ).find(Boolean);
+    return byType(true) ?? byType(false);
 }
 
 /** Fill device, size, timezone and content flags from a v4 file detail. */
