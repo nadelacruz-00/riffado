@@ -13,6 +13,8 @@ const {
     imageStorageKey,
     listImageStoragePaths,
     readyImagesQuery,
+    retryableImageCondition,
+    sniffImage,
 } = await import("@/lib/recordings/images");
 
 const mockDb = drizzle.mock({ schema }) as unknown as Parameters<
@@ -141,5 +143,46 @@ describe("listImageStoragePaths", () => {
             params: ["u"],
         });
         expect(paths).toEqual(["u/images/r1/c_1.jpg"]);
+    });
+});
+
+describe("sniffImage", () => {
+    const heic = Buffer.concat([
+        Buffer.from([0, 0, 0, 24]),
+        Buffer.from("ftypheic", "ascii"),
+        Buffer.alloc(4),
+    ]);
+    const webp = Buffer.concat([
+        Buffer.from("RIFF", "ascii"),
+        Buffer.alloc(4),
+        Buffer.from("WEBP", "ascii"),
+    ]);
+
+    it.each([
+        [Buffer.from([0xff, 0xd8, 0xff, 0xe1]), "jpg", "image/jpeg"],
+        [
+            Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+            "png",
+            "image/png",
+        ],
+        [webp, "webp", "image/webp"],
+        [heic, "heic", "image/heic"],
+    ])("detects %#", (buf, ext, mimeType) => {
+        expect(sniffImage(buf)).toEqual({ ext, mimeType });
+    });
+
+    it("rejects SVG, empty and truncated data", () => {
+        expect(sniffImage(Buffer.from("<svg xmlns='x'/>"))).toBeNull();
+        expect(sniffImage(Buffer.alloc(0))).toBeNull();
+        expect(sniffImage(Buffer.from([0xff, 0xd8]))).toBeNull();
+    });
+});
+
+describe("retryableImageCondition", () => {
+    it("selects pending rows and failed rows with attempts left, except unsupported_type", () => {
+        expect(render(retryableImageCondition())).toEqual({
+            sql: '("recording_images"."status" = $1 or ("recording_images"."status" = $2 and "recording_images"."attempts" < $3 and ("recording_images"."last_error" is null or "recording_images"."last_error" <> $4)))',
+            params: ["pending", "failed", 5, "unsupported_type"],
+        });
     });
 });
