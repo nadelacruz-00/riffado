@@ -68,8 +68,8 @@ export function RecordingListToolbar({
                     </button>
                 )}
             </div>
-            <div className="flex items-center justify-between text-xs text-muted-foreground">
-                <span>
+            <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                <span className="shrink-0 whitespace-nowrap">
                     {filteredCount}
                     {query ? " matching" : ""} of {totalCount} recording
                     {totalCount !== 1 ? "s" : ""}

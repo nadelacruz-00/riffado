@@ -59,7 +59,7 @@ export function RecordingPlayerControls({
         );
 
     return (
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-3 sm:flex-nowrap">
             <Button
                 onClick={onTogglePlay}
                 size="lg"
@@ -93,9 +93,12 @@ export function RecordingPlayerControls({
 
             {/*
               Waveform takes whatever's left, with min-w-0 so flex
-              doesn't expand the parent when bars are dense.
+              doesn't expand the parent when bars are dense. Below
+              `sm` the row wraps and the waveform drops to its own
+              full-width line (order-last + basis-full); in one row
+              on a phone it had no width left and collapsed to zero.
             */}
-            <div className="min-w-0 flex-1">
+            <div className="order-last min-w-0 basis-full sm:order-none sm:basis-0 sm:flex-1">
                 {scrubberStyle === "waveform" && waveformPeaks ? (
                     <Waveform
                         peaks={waveformPeaks}
@@ -126,14 +129,18 @@ export function RecordingPlayerControls({
                 onClick={onCycleSpeed}
                 variant="outline"
                 size="sm"
-                className="h-8 w-12 shrink-0 px-0 font-mono text-xs tabular-nums"
+                className="ml-auto h-11 w-12 shrink-0 px-0 font-mono text-xs tabular-nums sm:ml-0 sm:h-8"
                 title="Click to cycle playback speed"
                 aria-label={`Playback speed ${speedLabel}. Click to change.`}
             >
                 {speedLabel}
             </Button>
 
-            <div className="flex shrink-0 items-center gap-2">
+            {/*
+              Hidden below `sm`: phones set volume with hardware keys,
+              and the fixed-width slider pushed the row past the card.
+            */}
+            <div className="hidden shrink-0 items-center gap-2 sm:flex">
                 <button
                     type="button"
                     onClick={onToggleMute}
