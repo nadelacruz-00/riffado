@@ -14,6 +14,8 @@ import type { StorageProvider } from "@/lib/storage/types";
 export interface ArchiveResult {
     recordingCount: number;
     fileSize: number;
+    /** Recordings whose audio is missing from the archive or was cut short (unreadable, missing, or interrupted mid-stream). */
+    audioOmittedCount: number;
 }
 
 interface ManifestRecording {
@@ -56,8 +58,10 @@ function folderName(recording: { id: string; startTime: Date }): string {
  * the whole archive, or more than one recording's audio, held in memory.
  *
  * A recording whose audio can't be read (deleted from storage, transient
- * error) doesn't fail the whole export: it's noted in the manifest and
- * skipped, so the user still gets everything else.
+ * error, storage unreachable, stream interrupted) doesn't fail the whole
+ * export: it's noted in the manifest and skipped, so the user still gets
+ * everything else. The manifest and the result report how many
+ * recordings' audio was omitted.
  */
 export async function buildAndUploadExportArchive(input: {
     userId: string;
@@ -171,6 +175,7 @@ export async function buildAndUploadExportArchive(input: {
         storageKey,
         passthrough,
         "application/zip",
+        { onProgress },
     );
     // `uploadPromise` is only *awaited* much later (after the
     // audio-settled wait and `archive.finalize()`), but it starts
@@ -188,11 +193,13 @@ export async function buildAndUploadExportArchive(input: {
         version: string;
         createdAt: string;
         userId: string;
+        audioOmittedCount: number;
         recordings: ManifestRecording[];
     } = {
         version: "2.0",
         createdAt: new Date().toISOString(),
         userId,
+        audioOmittedCount: 0,
         recordings: [],
     };
 
@@ -258,9 +265,14 @@ export async function buildAndUploadExportArchive(input: {
             images: [],
         };
 
-        const audioExists = await storage
-            .exists(recording.storagePath)
-            .catch(() => false);
+        let audioExists = false;
+        let audioCheckError: string | null = null;
+        try {
+            audioExists = await storage.exists(recording.storagePath);
+        } catch (error) {
+            audioCheckError =
+                error instanceof Error ? error.message : String(error);
+        }
         if (audioExists) {
             try {
                 const rawStream = await storage.downloadStream(
@@ -289,7 +301,9 @@ export async function buildAndUploadExportArchive(input: {
             entry.audio = {
                 included: false,
                 path: null,
-                reason: "Audio file not found in storage",
+                reason: audioCheckError
+                    ? `Audio storage unavailable: ${audioCheckError}`
+                    : "Audio file not found in storage",
             };
         }
 
@@ -406,6 +420,9 @@ export async function buildAndUploadExportArchive(input: {
         );
     });
 
+    manifest.audioOmittedCount = manifest.recordings.filter(
+        (entry) => !entry.audio.included,
+    ).length;
     archive.append(Buffer.from(JSON.stringify(manifest, null, 2)), {
         name: "manifest.json",
     });
@@ -417,5 +434,9 @@ export async function buildAndUploadExportArchive(input: {
         signal?.removeEventListener("abort", onAbort);
     }
 
-    return { recordingCount: userRecordings.length, fileSize };
+    return {
+        recordingCount: userRecordings.length,
+        fileSize,
+        audioOmittedCount: manifest.audioOmittedCount,
+    };
 }

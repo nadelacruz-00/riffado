@@ -1,5 +1,5 @@
 {
-  "id": "b88b6ccf-cc5a-4616-a5a7-d7b3c8f3cf34",
+  "id": "940c2d43-4a6a-40c1-a448-00c4741ed272",
   "prevId": "2c7319d5-fda2-4745-bb83-8efa5ab20e9a",
   "version": "7",
   "dialect": "postgresql",
@@ -1889,180 +1889,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.recording_images": {
-      "name": "recording_images",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "recording_id": {
-          "name": "recording_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "plaud_image_id": {
-          "name": "plaud_image_id",
-          "type": "varchar(255)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "storage_type": {
-          "name": "storage_type",
-          "type": "varchar(10)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "storage_path": {
-          "name": "storage_path",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "mime_type": {
-          "name": "mime_type",
-          "type": "varchar(100)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "size_bytes": {
-          "name": "size_bytes",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "captured_at": {
-          "name": "captured_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "offset_ms": {
-          "name": "offset_ms",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(16)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'pending'"
-        },
-        "attempts": {
-          "name": "attempts",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "last_error": {
-          "name": "last_error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "recording_images_recording_id_idx": {
-          "name": "recording_images_recording_id_idx",
-          "columns": [
-            {
-              "expression": "recording_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "recording_images_user_id_idx": {
-          "name": "recording_images_user_id_idx",
-          "columns": [
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "recording_images_recording_id_recordings_id_fk": {
-          "name": "recording_images_recording_id_recordings_id_fk",
-          "tableFrom": "recording_images",
-          "tableTo": "recordings",
-          "columnsFrom": [
-            "recording_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "recording_images_user_id_users_id_fk": {
-          "name": "recording_images_user_id_users_id_fk",
-          "tableFrom": "recording_images",
-          "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "recording_images_recording_id_plaud_image_id_unique": {
-          "name": "recording_images_recording_id_plaud_image_id_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "recording_id",
-            "plaud_image_id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.recordings": {
       "name": "recordings",
       "schema": "",
@@ -2185,12 +2011,6 @@
         "deleted_at": {
           "name": "deleted_at",
           "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "images_checked_version": {
-          "name": "images_checked_version",
-          "type": "varchar(50)",
           "primaryKey": false,
           "notNull": false
         },
@@ -2373,6 +2193,145 @@
           ]
         }
       },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.status_job_runs": {
+      "name": "status_job_runs",
+      "schema": "",
+      "columns": {
+        "job": {
+          "name": "job",
+          "type": "varchar(40)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "last_success_at": {
+          "name": "last_success_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_error_at": {
+          "name": "last_error_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "failing_since": {
+          "name": "failing_since",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.status_minute_buckets": {
+      "name": "status_minute_buckets",
+      "schema": "",
+      "columns": {
+        "part": {
+          "name": "part",
+          "type": "varchar(40)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "minute": {
+          "name": "minute",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ok": {
+          "name": "ok",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "err": {
+          "name": "err",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "latency_buckets": {
+          "name": "latency_buckets",
+          "type": "integer[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::integer[]"
+        },
+        "verdict_ok": {
+          "name": "verdict_ok",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "verdict_slow": {
+          "name": "verdict_slow",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "verdict_down": {
+          "name": "verdict_down",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "status_minute_buckets_minute_idx": {
+          "name": "status_minute_buckets_minute_idx",
+          "columns": [
+            {
+              "expression": "minute",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "status_minute_buckets_part_minute_pk": {
+          "name": "status_minute_buckets_part_minute_pk",
+          "columns": [
+            "part",
+            "minute"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false

@@ -18,10 +18,15 @@ const { dbMock, emailMock, envMock, imagesMock, queriesMock, storageMock } =
         },
     }));
 
+const { exportJobsMock } = vi.hoisted(() => ({
+    exportJobsMock: { listExportStorageKeysForUser: vi.fn() },
+}));
+
 vi.mock("@/db", () => ({ db: dbMock }));
 vi.mock("@/db/schema", () => ({ users: { id: "id", email: "email" } }));
 vi.mock("@/lib/env", () => ({ env: envMock }));
 vi.mock("@/db/queries/billing", () => queriesMock);
+vi.mock("@/db/queries/export-jobs", () => exportJobsMock);
 vi.mock("@/lib/notifications/email", () => emailMock);
 vi.mock("@/lib/storage/factory", () => ({
     createStorageProvider: () => storageMock,
@@ -47,6 +52,7 @@ describe("deleteUserAccount", () => {
     beforeEach(() => {
         vi.clearAllMocks();
         emailMock.sendAccountDeletedEmail.mockResolvedValue(true);
+        exportJobsMock.listExportStorageKeysForUser.mockResolvedValue([]);
         stubEmailLookup("default@example.com");
     });
 
@@ -67,7 +73,9 @@ describe("deleteUserAccount", () => {
             1,
             "users/u1/a.opus",
         );
-        expect(queriesMock.deleteUser).toHaveBeenCalledWith("u1");
+        expect(queriesMock.deleteUser).toHaveBeenCalledWith("u1", {
+            deletedStorageKeys: ["users/u1/a.opus", "users/u1/b.opus"],
+        });
     });
 
     it("continues past per-object storage errors and still deletes the user row", async () => {
@@ -90,7 +98,9 @@ describe("deleteUserAccount", () => {
         errorSpy.mockRestore();
 
         expect(result.storageErrors).toBe(1);
-        expect(queriesMock.deleteUser).toHaveBeenCalledWith("u1");
+        expect(queriesMock.deleteUser).toHaveBeenCalledWith("u1", {
+            deletedStorageKeys: ["a", "c"],
+        });
     });
 
     it("also deletes the user's stored photo files (#331)", async () => {
@@ -120,7 +130,9 @@ describe("deleteUserAccount", () => {
 
         expect(result.storageErrors).toBe(0);
         expect(storageMock.deleteFile).not.toHaveBeenCalled();
-        expect(queriesMock.deleteUser).toHaveBeenCalledWith("u1");
+        expect(queriesMock.deleteUser).toHaveBeenCalledWith("u1", {
+            deletedStorageKeys: [],
+        });
     });
 });
 
@@ -128,6 +140,7 @@ describe("processDueAccountDeletions", () => {
     beforeEach(() => {
         vi.clearAllMocks();
         emailMock.sendAccountDeletedEmail.mockResolvedValue(true);
+        exportJobsMock.listExportStorageKeysForUser.mockResolvedValue([]);
         stubEmailLookup("default@example.com");
     });
 

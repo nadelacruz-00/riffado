@@ -24,7 +24,7 @@ import {
     mapPlaudV4Item,
     PLAUD_V4_VERSION_CONFLICT_STATUS,
     type PlaudHighlightImage,
-    pickAudioObject,
+    plaudV4AudioCandidates,
     plaudV4DetailToLegacy,
     recordingIdToPlaudV4FileId,
     selectHighlightImages,
@@ -43,6 +43,7 @@ export interface PlaudUpdateFilenameResponse {
 
 export const DEFAULT_PLAUD_API_BASE = PLAUD_SERVERS[DEFAULT_SERVER_KEY].apiBase;
 const MAX_RETRIES = 3;
+const MAX_AUTH_RETRIES = 3;
 const INITIAL_RETRY_DELAY = 1000;
 
 function sleep(ms: number): Promise<void> {
@@ -71,13 +72,56 @@ function plaudHttpError(status: number, msg: string): AppError {
     });
 }
 
+/**
+ * True when `err` means Plaud rejected the token outright
+ * (`PLAUD_INVALID_TOKEN`), as opposed to a rate limit, upstream or network
+ * failure that may succeed on a later attempt.
+ */
+export function isPlaudTokenRejection(err: unknown): boolean {
+    return (
+        err instanceof AppError && err.code === ErrorCode.PLAUD_INVALID_TOKEN
+    );
+}
+
+const loggedWorkspaceFallbacks = new Set<string>();
+
+export interface PlaudClientOptions {
+    /**
+     * Returns a fresh user token when Plaud answers 401 to the user token, or
+     * to a workspace token that was already re-minted once. Also called once
+     * per client when Plaud rejects a user token that was not just refreshed
+     * on the workspace-token mint; any failure there falls back to the user
+     * token, and a transient failure is rethrown by the next 401 instead of
+     * refreshing again. At most one call is in flight per client; once it
+     * settles, a later 401 on the new token may refresh again. A
+     * `PLAUD_INVALID_TOKEN` rejection leaves the original 401 in place and is
+     * not retried; any other rejection on a data request is rethrown to the
+     * caller and a later 401 may try again.
+     */
+    refreshUserToken?: () => Promise<string>;
+    /**
+     * Stored connection id. Limits the user-token fallback warning to once
+     * per connection and error code per process until a workspace token is
+     * minted again.
+     */
+    connectionId?: string;
+    /** True when `userToken` was just refreshed, so a mint 401 does not refresh it again. */
+    userTokenFresh?: boolean;
+}
+
 export class PlaudClient {
-    private readonly userToken: string;
+    private userToken: string;
     private readonly apiBase: string;
+    private readonly refreshUserToken?: () => Promise<string>;
+    private readonly connectionId?: string;
+    private userTokenRefresh?: Promise<void>;
     private workspaceToken?: string;
     private resolvedWorkspaceId?: string;
     private workspaceFetchInFlight?: Promise<void>;
     private workspaceFallbackToUt = false;
+    private workspaceRemintUsed = false;
+    private mintRefreshUsed = false;
+    private mintRefreshError?: unknown;
     private v4Mode = false;
     private v4ListCache?: PlaudRecording[];
     private readonly v4DetailCache = new Map<
@@ -89,10 +133,14 @@ export class PlaudClient {
         userToken: string,
         apiBase: string = DEFAULT_PLAUD_API_BASE,
         workspaceId?: string | null,
+        options: PlaudClientOptions = {},
     ) {
         this.userToken = userToken;
         this.apiBase = apiBase;
         this.resolvedWorkspaceId = workspaceId ?? undefined;
+        this.refreshUserToken = options.refreshUserToken;
+        this.connectionId = options.connectionId;
+        this.mintRefreshUsed = options.userTokenFresh ?? false;
     }
 
     get workspaceId(): string | undefined {
@@ -121,27 +169,135 @@ export class PlaudClient {
     }
 
     private async fetchWorkspaceToken(): Promise<void> {
+        let mintError: unknown;
         try {
-            const { workspaceToken, workspaceId } = await resolveWorkspaceToken(
-                this.userToken,
-                this.apiBase,
-                this.resolvedWorkspaceId,
-            );
-            this.workspaceToken = workspaceToken;
-            this.resolvedWorkspaceId = workspaceId;
+            await this.mintWorkspaceToken();
+            return;
         } catch (err) {
+            mintError = err;
+        }
+        if (
+            isPlaudTokenRejection(mintError) &&
+            (await this.refreshBeforeFallback())
+        ) {
+            try {
+                await this.mintWorkspaceToken();
+                return;
+            } catch (err) {
+                mintError = err;
+            }
+        }
+        this.fallBackToUserToken(mintError);
+    }
+
+    private async mintWorkspaceToken(): Promise<void> {
+        const { workspaceToken, workspaceId } = await resolveWorkspaceToken(
+            this.userToken,
+            this.apiBase,
+            this.resolvedWorkspaceId,
+        );
+        this.workspaceToken = workspaceToken;
+        this.resolvedWorkspaceId = workspaceId;
+        if (this.connectionId) {
+            const prefix = `${this.connectionId}:`;
+            for (const key of loggedWorkspaceFallbacks) {
+                if (key.startsWith(prefix)) {
+                    loggedWorkspaceFallbacks.delete(key);
+                }
+            }
+        }
+    }
+
+    private async refreshBeforeFallback(): Promise<boolean> {
+        if (!this.refreshUserToken || this.mintRefreshUsed) return false;
+        this.mintRefreshUsed = true;
+        try {
+            return await this.refreshAfterUnauthorized(this.userToken);
+        } catch (err) {
+            this.mintRefreshError = err;
+            return false;
+        }
+    }
+
+    private fallBackToUserToken(err: unknown): void {
+        this.workspaceFallbackToUt = true;
+        if (this.connectionId) {
+            const code = err instanceof AppError ? err.code : "unknown";
+            const key = `${this.connectionId}:${code}`;
+            if (loggedWorkspaceFallbacks.has(key)) return;
+            loggedWorkspaceFallbacks.add(key);
+        }
+        console.warn(
+            "[plaud] workspace token mint failed, falling back to user token:",
+            err instanceof Error ? err.message : err,
+        );
+    }
+
+    private async recoverFromUnauthorized(
+        usedBearer: string,
+    ): Promise<boolean> {
+        if (usedBearer !== (this.workspaceToken ?? this.userToken)) {
+            return true;
+        }
+        if (usedBearer === this.workspaceToken && !this.workspaceRemintUsed) {
+            this.workspaceRemintUsed = true;
+            this.workspaceToken = undefined;
+            return true;
+        }
+        return this.refreshAfterUnauthorized(usedBearer);
+    }
+
+    private async refreshAfterUnauthorized(
+        usedBearer: string,
+    ): Promise<boolean> {
+        if (!this.refreshUserToken) return false;
+        if (this.mintRefreshError !== undefined) {
+            const err = this.mintRefreshError;
+            this.mintRefreshError = undefined;
+            throw err;
+        }
+        if (!this.userTokenRefresh) {
+            const attempt = this.refreshUserToken().then((token) => {
+                this.userToken = token;
+                this.workspaceToken = undefined;
+                this.workspaceFallbackToUt = false;
+                this.mintRefreshUsed = true;
+            });
+            this.userTokenRefresh = attempt;
+            attempt.then(
+                () => {
+                    if (this.userTokenRefresh === attempt) {
+                        this.userTokenRefresh = undefined;
+                    }
+                },
+                (err: unknown) => {
+                    if (
+                        !isPlaudTokenRejection(err) &&
+                        this.userTokenRefresh === attempt
+                    ) {
+                        this.userTokenRefresh = undefined;
+                    }
+                },
+            );
+        }
+        try {
+            await this.userTokenRefresh;
+        } catch (err) {
+            if (!isPlaudTokenRejection(err)) throw err;
             console.warn(
-                "[plaud] workspace token mint failed, falling back to user token:",
+                "[plaud] user token refresh after 401 was rejected:",
                 err instanceof Error ? err.message : err,
             );
-            this.workspaceFallbackToUt = true;
+            return false;
         }
+        return (this.workspaceToken ?? this.userToken) !== usedBearer;
     }
 
     private async request<T>(
         endpoint: string,
         options?: RequestInit,
         retryCount = 0,
+        authRetries = 0,
     ): Promise<T> {
         await this.ensureWorkspaceToken();
 
@@ -166,7 +322,12 @@ export class PlaudClient {
                         ? Number.parseInt(retryAfter, 10) * 1000
                         : INITIAL_RETRY_DELAY * 2 ** retryCount;
                     await sleep(delay);
-                    return this.request<T>(endpoint, options, retryCount + 1);
+                    return this.request<T>(
+                        endpoint,
+                        options,
+                        retryCount + 1,
+                        authRetries,
+                    );
                 }
                 const retryAfter = response.headers.get("Retry-After");
                 throw new AppError(
@@ -176,6 +337,20 @@ export class PlaudClient {
                     retryAfter
                         ? { retryAfter: Number.parseInt(retryAfter, 10) }
                         : undefined,
+                );
+            }
+
+            if (
+                response.status === 401 &&
+                authRetries < MAX_AUTH_RETRIES &&
+                (await this.recoverFromUnauthorized(bearer))
+            ) {
+                await response.body?.cancel().catch(() => undefined);
+                return this.request<T>(
+                    endpoint,
+                    options,
+                    retryCount,
+                    authRetries + 1,
                 );
             }
 
@@ -192,7 +367,12 @@ export class PlaudClient {
                 ) {
                     const delay = INITIAL_RETRY_DELAY * 2 ** retryCount;
                     await sleep(delay);
-                    return this.request<T>(endpoint, options, retryCount + 1);
+                    return this.request<T>(
+                        endpoint,
+                        options,
+                        retryCount + 1,
+                        authRetries,
+                    );
                 }
 
                 throw plaudHttpError(response.status, upstreamMsg);
@@ -207,7 +387,12 @@ export class PlaudClient {
             ) {
                 const delay = INITIAL_RETRY_DELAY * 2 ** retryCount;
                 await sleep(delay);
-                return this.request<T>(endpoint, options, retryCount + 1);
+                return this.request<T>(
+                    endpoint,
+                    options,
+                    retryCount + 1,
+                    authRetries,
+                );
             }
 
             if (error instanceof AppError) throw error;
@@ -295,7 +480,6 @@ export class PlaudClient {
         };
     }
 
-    /** All recordings via `/file-app/v4/recordings/all`, newest first. */
     private async listAllRecordingsV4(): Promise<PlaudRecording[]> {
         if (this.v4ListCache) return this.v4ListCache;
 
@@ -367,13 +551,11 @@ export class PlaudClient {
         return applyPlaudV4Detail(recording, detail);
     }
 
-    /** Presigned audio URL of a v4 file (object URL or content/url). */
     private async getAudioUrlV4(recordingId: string): Promise<string> {
         const detail = await this.getFileDetailV4(recordingId);
-        const audio = pickAudioObject(detail);
-        if (audio?.content_url) return audio.content_url;
-
-        if (audio?.content_id) {
+        for (const audio of plaudV4AudioCandidates(detail)) {
+            if (audio.content_url) return audio.content_url;
+            if (!audio.content_id) continue;
             const urls = await this.resolveContentUrlsV4([audio.content_id]);
             const url = urls[audio.content_id];
             if (url) return url;
@@ -386,7 +568,6 @@ export class PlaudClient {
         );
     }
 
-    /** Presigned URLs for v4 content ids (`/file-app/v4/files/content/url`). */
     private async resolveContentUrlsV4(
         contentIds: string[],
     ): Promise<Record<string, string>> {
@@ -401,20 +582,17 @@ export class PlaudClient {
         return body?.status === 0 ? (body.data?.url_map ?? {}) : {};
     }
 
-    /** Fill missing transcript / summary URLs of a v4 detail. */
     private async withContentUrlsV4(
         detail: NonNullable<PlaudV4FileDetailResponse["data"]>,
     ): Promise<NonNullable<PlaudV4FileDetailResponse["data"]>> {
         const objects = detail.objects ?? [];
-        const missing = objects
-            .filter(
-                (o) =>
-                    (o.object_type === "TRANSCRIPT" ||
-                        o.object_type === "SUMMARY") &&
-                    !o.content_url &&
-                    o.content_id,
-            )
-            .map((o) => o.content_id as string);
+        const missing = objects.flatMap((o) =>
+            (o.object_type === "TRANSCRIPT" || o.object_type === "SUMMARY") &&
+            !o.content_url &&
+            o.content_id
+                ? [o.content_id]
+                : [],
+        );
         if (missing.length === 0) return detail;
         const urls = await this.resolveContentUrlsV4(missing);
         return {
@@ -499,7 +677,8 @@ export class PlaudClient {
      * links to their bodies. Goes through `request`, so it inherits
      * workspace-token auth, retry/backoff, and 401 → PLAUD_INVALID_TOKEN.
      * NOTE: the response shape is unverified (see #204 / Phase 0).
-     * On Plaud 4.0 accounts the v4 detail is mapped onto the same shape.
+     * On Plaud 4.0 accounts a fresh v4 detail (current presigned links) is
+     * mapped onto the same shape.
      */
     async getFileDetail(fileId: string): Promise<PlaudFileDetailResponse> {
         if (!this.v4Mode) {
@@ -510,7 +689,9 @@ export class PlaudClient {
             this.v4Mode = true;
         }
         return plaudV4DetailToLegacy(
-            await this.withContentUrlsV4(await this.getFileDetailV4(fileId)),
+            await this.withContentUrlsV4(
+                await this.getFileDetailV4(fileId, { fresh: true }),
+            ),
         );
     }
 
@@ -611,16 +792,11 @@ export class PlaudClient {
         return this.renameV4(fileId, filename);
     }
 
-    /**
-     * Plaud 4.0 title sync. Renames the recording's file node and, when the
-     * per-recording folder (what the Plaud library lists) still carries the
-     * same auto-generated name, that folder too.
-     */
     private async renameV4(
         recordingId: string,
         name: string,
     ): Promise<PlaudUpdateFilenameResponse> {
-        let fileNode = undefined as PlaudV4Node | undefined;
+        let fileNode: PlaudV4Node | undefined;
         const renamed = await this.renameNodeV4(name, async () => {
             const detail = await this.getFileDetailV4(recordingId, {
                 fresh: true,
@@ -666,13 +842,6 @@ export class PlaudClient {
         return { status: 0, msg: "success", data_file: renamed?.data };
     }
 
-    /**
-     * `PATCH /file-app/v4/nodes/rename/{node_id}` with the node's current
-     * version as `origin_version` (optimistic locking). A stale version
-     * answers `-1800313`: refetch and retry once, as the Plaud web app does.
-     * The resolver runs before each attempt and can return `skip` to stop
-     * without writing.
-     */
     private async renameNodeV4(
         name: string,
         resolve: () => Promise<{
@@ -718,7 +887,6 @@ export class PlaudClient {
         );
     }
 
-    /** Current state of a folder child (scans a few pages). */
     private async findChildV4(
         parentId: string,
         childId: string,

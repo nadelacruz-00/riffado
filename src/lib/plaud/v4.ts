@@ -127,8 +127,8 @@ export function sortPlaudRecordings(
     sortBy: string,
     isDesc: boolean,
 ): PlaudRecording[] {
-    const key = (r: PlaudRecording) =>
-        sortBy === "start_time" ? r.start_time : r.edit_time;
+    const byStart = sortBy === "start_time" || sortBy === "create_time";
+    const key = (r: PlaudRecording) => (byStart ? r.start_time : r.edit_time);
     const dir = isDesc ? -1 : 1;
     return [...recordings].sort(
         (a, b) =>
@@ -148,29 +148,40 @@ function readyObject(
     );
 }
 
-const AUDIO_TYPES = ["AUDIO_TRANSCODED", "AUDIO"] as const;
+const AUDIO_OBJECT_TYPES = ["AUDIO_TRANSCODED", "AUDIO"];
 
 /**
- * Audio object of a v4 file detail. Plaud can expose two copies: `AUDIO`, the
- * recorder's raw upload (not a playable container on some 4.0 accounts), and
- * `AUDIO_TRANSCODED`, the MP3 the Plaud player streams. Prefer the transcoded
- * copy and fall back to `AUDIO`, which older files carry alone (Ogg/Opus).
- * A downloadable object (URL or content id) wins over one without, so the
- * size read and the download use the same object.
+ * Downloadable audio objects of a v4 file detail, in the order riffado tries
+ * them: `AUDIO_TRANSCODED` (the MP3 the Plaud player streams) before `AUDIO`
+ * (the recorder upload, not always a playable container). Only objects with
+ * a content URL or id are listed.
  */
-export function pickAudioObject(
+export function plaudV4AudioCandidates(
+    detail: PlaudV4FileDetail | undefined,
+): PlaudV4FileObject[] {
+    const objects = detail?.objects ?? [];
+    return AUDIO_OBJECT_TYPES.flatMap((type) =>
+        objects.filter(
+            (o) =>
+                o.object_type === type &&
+                Boolean(o.content_url || o.content_id),
+        ),
+    );
+}
+
+/**
+ * The audio object riffado expects to download from a v4 file detail: the
+ * first of `plaudV4AudioCandidates`, else any audio object (for its size).
+ */
+export function selectPlaudV4Audio(
     detail: PlaudV4FileDetail | undefined,
 ): PlaudV4FileObject | undefined {
-    const objects = detail?.objects ?? [];
-    const byType = (downloadable: boolean) =>
-        AUDIO_TYPES.map((type) =>
-            objects.find(
-                (o) =>
-                    o.object_type === type &&
-                    (!downloadable || Boolean(o.content_url || o.content_id)),
-            ),
-        ).find(Boolean);
-    return byType(true) ?? byType(false);
+    return (
+        plaudV4AudioCandidates(detail)[0] ??
+        AUDIO_OBJECT_TYPES.map((type) =>
+            detail?.objects?.find((o) => o.object_type === type),
+        ).find(Boolean)
+    );
 }
 
 /** Fill device, size, timezone and content flags from a v4 file detail. */
@@ -180,14 +191,19 @@ export function applyPlaudV4Detail(
 ): PlaudRecording {
     if (!detail) return recording;
     const meta = detail.meta ?? {};
-    const audio = pickAudioObject(detail);
+    const audio = selectPlaudV4Audio(detail);
+    const metaSize =
+        audio?.object_type === "AUDIO_TRANSCODED" ? undefined : meta.size_bytes;
     const start = meta.start_time ?? recording.start_time;
     const duration = meta.duration ?? recording.duration;
     const offset = timeZoneOffsetMinutes(meta.timezone_iana, start);
     return {
         ...recording,
+        ...(offset !== undefined && meta.timezone_iana
+            ? { timezone_iana: meta.timezone_iana }
+            : {}),
         serial_number: meta.serial_number || recording.serial_number,
-        filesize: audio?.object_size || meta.size_bytes || recording.filesize,
+        filesize: audio?.object_size || metaSize || recording.filesize,
         start_time: start,
         end_time: start + duration,
         duration,
